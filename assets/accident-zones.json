@@ -1,0 +1,15 @@
+[
+  { "id": "z-ppuri-2019", "name": "뿌리약국 부근 (2019)", "latitude": 37.501200, "longitude": 127.039100, "radiusMeters": 30, "accidentCount3y": 3, "source": "TAAS_STANDARD" },
+  { "id": "z-ppuri-2020", "name": "뿌리약국 부근 (2020)", "latitude": 37.501210, "longitude": 127.039108, "radiusMeters": 35, "accidentCount3y": 4, "source": "TAAS_STANDARD" },
+  { "id": "z-ppuri-2021", "name": "뿌리약국 부근 (2021)", "latitude": 37.501195, "longitude": 127.039112, "radiusMeters": 25, "accidentCount3y": 6, "source": "TAAS_STANDARD" },
+  { "id": "z-ppuri-2022", "name": "뿌리약국 부근 (2022)", "latitude": 37.501205, "longitude": 127.039095, "radiusMeters": 40, "accidentCount3y": 2, "source": "TAAS_STANDARD" },
+  { "id": "z-ppuri-2023a", "name": "뿌리약국 부근 (2023-1)", "latitude": 37.501188, "longitude": 127.039120, "radiusMeters": 30, "accidentCount3y": 5, "source": "TAAS_STANDARD" },
+  { "id": "z-ppuri-2023b", "name": "뿌리약국 부근 (2023-2)", "latitude": 37.501218, "longitude": 127.039090, "radiusMeters": 30, "accidentCount3y": 3, "source": "TAAS_STANDARD" },
+  { "id": "z-ppuri-2024a", "name": "뿌리약국 부근 (2024-1)", "latitude": 37.501200, "longitude": 127.039130, "radiusMeters": 45, "accidentCount3y": 7, "source": "TAAS_STANDARD" },
+  { "id": "z-ppuri-2024b", "name": "뿌리약국 부근 (2024-2)", "latitude": 37.501225, "longitude": 127.039105, "radiusMeters": 30, "accidentCount3y": 4, "source": "TAAS_STANDARD" },
+  { "id": "z-ref-lone5", "name": "기준 참조 지점 (고립 5건)", "latitude": 37.512400, "longitude": 127.058300, "radiusMeters": 30, "accidentCount3y": 5, "source": "TAAS_STANDARD" },
+  { "id": "z-hakdong", "name": "학동사거리 부근", "latitude": 37.514100, "longitude": 127.031900, "radiusMeters": 50, "accidentCount3y": 9, "source": "TAAS_STANDARD" },
+  { "id": "z-samseong", "name": "삼성역 북단", "latitude": 37.508900, "longitude": 127.063200, "radiusMeters": 40, "accidentCount3y": 12, "source": "TAAS_STANDARD" },
+  { "id": "z-yeoksam", "name": "역삼초등학교 앞", "latitude": 37.496700, "longitude": 127.045500, "radiusMeters": 35, "accidentCount3y": 4, "source": "SAMPLE_PLACEHOLDER" },
+  { "id": "z-seolleung", "name": "선릉로 교차로", "latitude": 37.504300, "longitude": 127.049800, "radiusMeters": 30, "accidentCount3y": 6, "source": "TAAS_STANDARD" }
+]
