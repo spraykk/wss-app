@@ -1,0 +1,22 @@
+{
+  "expo": {
+    "name": "보행안전 WSS", "slug": "wss-app", "version": "1.0.0", "orientation": "portrait",
+    "icon": "./assets/icon.png", "userInterfaceStyle": "light", "scheme": "wssapp", "newArchEnabled": true,
+    "ios": {
+      "supportsTablet": true, "bundleIdentifier": "com.wssapp.walkingsafety",
+      "infoPlist": {
+        "NSLocationWhenInUseUsageDescription": "보행 중 위험지역 진입을 감지해 실시간으로 알려드리기 위해 위치 정보가 필요합니다.",
+        "NSMotionUsageDescription": "보행 여부를 감지하기 위해 걸음 수 센서를 사용합니다.",
+        "UIBackgroundModes": ["location"]
+      }
+    },
+    "android": {
+      "package": "com.wssapp.walkingsafety",
+      "adaptiveIcon": { "backgroundColor": "#E6F4FE", "foregroundImage": "./assets/android-icon-foreground.png", "backgroundImage": "./assets/android-icon-background.png", "monochromeImage": "./assets/android-icon-monochrome.png" },
+      "predictiveBackGestureEnabled": false,
+      "permissions": ["ACCESS_FINE_LOCATION", "ACCESS_COARSE_LOCATION", "ACTIVITY_RECOGNITION"]
+    },
+    "web": { "favicon": "./assets/favicon.png" },
+    "plugins": ["expo-router", ["expo-notifications", { "icon": "./assets/icon.png" }]]
+  }
+}
