@@ -33,8 +33,8 @@ function formatDate(year: number, month1to12: number, day: number): string {
 }
 
 // 기준 시각(now)에 대한 초단기실황 base_date/base_time 을 불변으로 계산한다.
-// - 공유 Date 를 변형하지 않는다. 필요한 롤백은 UTC 기준 밀리초 산술로 새 Date 를
-//   만들어 처리하므로 순서 의존이 없다.
+// - 공유 Date 를 변형하지 않는다. 필요한 롤백은 로컬 날짜 구성요소로 새 Date 를
+//   (new Date(year, month, day - 1)) 만들어 처리하므로 순서 의존이 없다.
 export function nearestUltraSrtNcstBase(now: Date = new Date()): NcstBase {
   // now 를 변형하지 않고 로컬 시각 구성요소만 읽는다.
   const minutes = now.getMinutes();

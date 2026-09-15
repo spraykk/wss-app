@@ -40,43 +40,71 @@ export function haversineMeters(
 }
 
 // 임계값(thresholdMeters) 이내로 서로 인접한 zone 들을 하나로 병합하는 순수 함수.
-// - 클러스터링: 각 zone 을 이미 만들어진 클러스터의 대표 지점과 비교하여
-//   haversine 거리 <= threshold 이면 해당 클러스터에 합류(단일 연결/single-link 근사).
+// - 클러스터링: 진정한 전이적(transitive) 클러스터링 = 겹침 그래프의 연결 요소
+//   (connected components). zone i, j 사이의 haversine 거리 <= threshold 이면
+//   두 zone 을 잇는 간선(edge)으로 보고, union-find 로 연결 요소를 계산한다.
+//   따라서 두 zone 이 직접 이웃이 아니어도 임계값 내 이웃들의 사슬(chain)로
+//   연결되면 같은 클러스터가 된다(순서 무관, 전이적). 이 union-find 패턴은
+//   src/data/overlapGeometry.ts 의 groupOverlappingCircles 와 동일한 방식이다.
 // - 병합 규칙:
 //   accidentCount3y = 클러스터 구성원 count 의 "합"(연도별 누적 총합 표현)
 //   대표 id/name/coordinate = 최대 count 구성원(동률이면 먼저 등장한 쪽)
 //   radiusMeters = 클러스터 내 최대값
 //   source = 구성원 중 하나라도 'TAAS_STANDARD' 이면 'TAAS_STANDARD', 아니면 'SAMPLE_PLACEHOLDER'
 //
-// 보정(calibration) 안전성: 임계값 내 이웃이 없는 고립 zone 은 단독 클러스터가 되어
-// 그대로 통과한다(합계 = 자기 자신의 count). 따라서 count 5 기준 참조 지점은
-// 불변 -> computeZoneSeverity(5)=1.0 -> computeLocationWeight(1.0)=2.5 유지.
+// 보정(calibration) 안전성: 임계값 내 이웃이 없는 고립 zone 은 단일 구성원
+// 연결 요소가 되어 그대로 통과한다(합계 = 자기 자신의 count). 따라서 count 5
+// 기준 참조 지점은 불변 -> computeZoneSeverity(5)=1.0 -> computeLocationWeight(1.0)=2.5 유지.
 // (count 5 를 특수 처리하지 않는다. 일반 알고리즘이 자연히 고립 지점을 보존한다.)
 export function mergeNearbyZones(
   zones: AccidentZone[],
   thresholdMeters: number = 30
 ): AccidentZone[] {
-  const clusters: AccidentZone[][] = [];
+  const parent = zones.map((_, i) => i);
 
-  for (const zone of zones) {
-    let placed = false;
-    for (const cluster of clusters) {
-      const rep = cluster[0];
-      if (
-        haversineMeters(zone.latitude, zone.longitude, rep.latitude, rep.longitude) <=
-        thresholdMeters
-      ) {
-        cluster.push(zone);
-        placed = true;
-        break;
-      }
+  function find(i: number): number {
+    let root = i;
+    while (parent[root] !== root) root = parent[root];
+    while (parent[i] !== root) {
+      const next = parent[i];
+      parent[i] = root;
+      i = next;
     }
-    if (!placed) {
-      clusters.push([zone]);
+    return root;
+  }
+
+  function union(a: number, b: number): void {
+    const ra = find(a);
+    const rb = find(b);
+    if (ra !== rb) parent[ra] = rb;
+  }
+
+  // 임계값 내에 있는 모든 쌍(i, j)에 대해 간선을 만들어 union.
+  for (let i = 0; i < zones.length; i += 1) {
+    for (let j = i + 1; j < zones.length; j += 1) {
+      if (
+        haversineMeters(
+          zones[i].latitude,
+          zones[i].longitude,
+          zones[j].latitude,
+          zones[j].longitude
+        ) <= thresholdMeters
+      ) {
+        union(i, j);
+      }
     }
   }
 
-  return clusters.map((cluster) => {
+  // 연결 요소별로 구성원을 모은다(입력 배열은 변형하지 않는다).
+  const components = new Map<number, AccidentZone[]>();
+  for (let i = 0; i < zones.length; i += 1) {
+    const root = find(i);
+    const bucket = components.get(root);
+    if (bucket) bucket.push(zones[i]);
+    else components.set(root, [zones[i]]);
+  }
+
+  return Array.from(components.values()).map((cluster) => {
     if (cluster.length === 1) {
       return cluster[0];
     }
