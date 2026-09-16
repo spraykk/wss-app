@@ -46,8 +46,7 @@ export function haversineMeters(
 //   (connected components). zone i, j 사이의 haversine 거리 <= threshold 이면
 //   두 zone 을 잇는 간선(edge)으로 보고, union-find 로 연결 요소를 계산한다.
 //   따라서 두 zone 이 직접 이웃이 아니어도 임계값 내 이웃들의 사슬(chain)로
-//   연결되면 같은 클러스터가 된다(순서 무관, 전이적). 이 union-find 패턴은
-//   src/data/overlapGeometry.ts 의 groupOverlappingCircles 와 동일한 방식이다.
+//   연결되면 같은 클러스터가 된다(순서 무관, 전이적).
 // - 병합 규칙:
 //   accidentCount3y = 클러스터 구성원 count 의 "합"(연도별 누적 총합 표현)
 //   대표 id/name/coordinate = 최대 count 구성원(동률이면 먼저 등장한 쪽)
@@ -155,4 +154,37 @@ export function loadRawAccidentZones(): AccidentZone[] {
 // 앱에서 사용하는 진입점: 원시 데이터 로드 후 중복 병합된 zone 목록을 반환한다.
 export function loadAccidentZones(): AccidentZone[] {
   return postProcessZones(loadRawAccidentZones());
+}
+
+// 두 위험구역 원이 실제로 겹치는지 판정하는 순수 헬퍼.
+// 두 중심 사이의 대권거리가 두 반경의 합보다 작으면 원이 겹친다.
+function zonesOverlap(a: AccidentZone, b: AccidentZone): boolean {
+  const d = haversineMeters(a.latitude, a.longitude, b.latitude, b.longitude);
+  return d < a.radiusMeters + b.radiusMeters;
+}
+
+// 실제로 원이 겹치는 zone 쌍의 인덱스 목록 { i, j } (i < j) 를 반환하는 순수 함수.
+// 지도(app/map.tsx)에서 겹치는 부분(렌즈)만 계산/렌더할 때, 전체 조합을 다 그리지 않고
+// 이미 겹친다고 확인된 쌍에 대해서만 overlapGeometry.computeOverlapRegion 을 호출하도록 한다.
+export function computeOverlapPairs(zones: AccidentZone[]): { i: number; j: number }[] {
+  const pairs: { i: number; j: number }[] = [];
+  for (let i = 0; i < zones.length; i += 1) {
+    for (let j = i + 1; j < zones.length; j += 1) {
+      if (zonesOverlap(zones[i], zones[j])) {
+        pairs.push({ i, j });
+      }
+    }
+  }
+  return pairs;
+}
+
+// zones 와 같은 순서의 배열로, 각 zone 이 "다른 위험구역과 원이 겹치는 개수"를 반환하는 순수 함수.
+// 마커 설명(겹침 곳 수)과 범례 표시에 사용한다.
+export function computeOverlapCounts(zones: AccidentZone[]): number[] {
+  const counts = zones.map(() => 0);
+  for (const { i, j } of computeOverlapPairs(zones)) {
+    counts[i] += 1;
+    counts[j] += 1;
+  }
+  return counts;
 }

@@ -1,124 +1,119 @@
-// 원-원 겹침(overlap) 기하 (버그 #4, MED) - 순수/검증 가능 모듈
+// 두 위험구역 원이 겹치는 "부분(렌즈 모양)"만 지도에 따로 그리기 위한 순수 기하 계산.
+// react-native-maps(Google Maps/Apple MapKit)는 원-원 교집합을 그려주는 기능이 없어서,
+// 여기서 직접 교차 다각형(렌즈)을 계산한 뒤 <Polygon>으로 그린다.
 //
-// 배경: 지도에서 위험 zone 을 반투명(alpha) 원으로 그린다. 3개 이상의 원이
-// 겹치면, 기존 코드는 "쌍(pair)마다" 렌즈(lens) 폴리곤을 그려서 겹침 영역의
-// 알파가 누적(over-darken)되었다. 예: 3개가 한 점에서 겹치면 그 영역에
-// pair 렌즈가 3개 겹쳐 3배 어두워진다.
-//
-// FIX 방향:
-//  1) 원-원 렌즈 면적/겹침 판정을 순수 함수로 분리(닫힌 형식/closed-form).
-//  2) 겹치는 zone 들을 "그룹(union)"으로 묶어, 렌즈를 쌍마다 겹쳐 그리는 대신
-//     그룹 단위로 한 번만(또는 알파를 클램프해) 렌더링하도록 대표 표현을 만든다.
-//
-// 주의: 원본 scripts/verify-overlap-geometry.ts 의 6개 참조 케이스 값은 전달되지
-// 않았다. 따라서 1:1 회귀 재현은 불가능하며, 검증은 "자기 일관성(self-consistency)
-// 기하 불변식"으로 대체한다(가이드.md의 재구성 참고 참조).
-//
-// 좌표계: 여기서는 평면(planar) 근사로 반지름/거리를 같은 단위(미터)로 다룬다.
-// 지도 렌더링 시에는 위경도를 미터로 환산해 넘겨준다.
+// 계산 방식: 관악구 규모(반경 수백 m)에서는 지구를 평면으로 근사해도 오차가 센티미터 단위로
+// 무시할 만하다는 점을 이용해, 두 중심의 중점을 기준으로 위경도를 미터 단위 평면좌표로
+// 변환한 뒤 표준적인 "두 원의 교차" 공식을 적용하고, 결과를 다시 위경도로 되돌린다.
+// (scripts/verify-overlap-geometry.ts 에서 이 계산이 실제 원-원 교차 넓이 공식과 일치하는지
+//  여러 케이스로 검증한다.)
 
-export interface OverlapCircle {
-  id: string;
-  // 평면 근사용 좌표(미터). 지도에서는 기준점 기준 등거리 투영으로 환산.
-  x: number;
-  y: number;
-  radiusMeters: number;
+export interface LatLng {
+  latitude: number;
+  longitude: number;
 }
 
-// 두 원의 교차(렌즈) 면적을 닫힌 형식으로 계산하는 순수 함수.
-// r1, r2: 두 원의 반지름, d: 두 중심 사이의 거리. 모두 같은 단위.
-//
-// 케이스:
-//  - d >= r1 + r2 : 서로 떨어져 있음 -> 0
-//  - d <= |r1 - r2| : 한 원이 다른 원에 완전히 포함 -> 작은 원의 넓이(π*min² )
-//  - 그 외 : 표준 원-원 렌즈 면적 공식
-export function circleIntersectionArea(r1: number, r2: number, d: number): number {
-  if (r1 <= 0 || r2 <= 0) return 0;
-  const dd = Math.abs(d);
+const EARTH_RADIUS_M = 6371000;
 
-  // 완전 분리
-  if (dd >= r1 + r2) return 0;
+/** 기준점(refLat, refLon) 주변을 평면(미터) 좌표로 근사 변환 */
+export function toLocalXY(refLat: number, refLon: number, lat: number, lon: number): { x: number; y: number } {
+  const latRad = (refLat * Math.PI) / 180;
+  const x = (((lon - refLon) * Math.PI) / 180) * EARTH_RADIUS_M * Math.cos(latRad);
+  const y = (((lat - refLat) * Math.PI) / 180) * EARTH_RADIUS_M;
+  return { x, y };
+}
 
-  // 완전 포함(동심 포함): 작은 원 전체가 렌즈 면적
-  if (dd <= Math.abs(r1 - r2)) {
-    const rMin = Math.min(r1, r2);
-    return Math.PI * rMin * rMin;
+/** toLocalXY의 역변환 */
+export function fromLocalXY(refLat: number, refLon: number, x: number, y: number): LatLng {
+  const latRad = (refLat * Math.PI) / 180;
+  const latitude = refLat + (y / EARTH_RADIUS_M) * (180 / Math.PI);
+  const longitude = refLon + (x / (EARTH_RADIUS_M * Math.cos(latRad))) * (180 / Math.PI);
+  return { latitude, longitude };
+}
+
+function normalizeAngle(a: number): number {
+  let x = a % (2 * Math.PI);
+  if (x < 0) x += 2 * Math.PI;
+  return x;
+}
+
+/** 중심(cx,cy) 원 위에서 fromAngle에서 시작해 throughAngle을 반드시 지나면서 toAngle로
+ * 끝나는 호를 steps개 구간으로 나눠 샘플링한다 (렌즈 폴리곤의 한쪽 변을 만드는 데 사용). */
+function sampleArcThrough(
+  cx: number,
+  cy: number,
+  r: number,
+  fromAngle: number,
+  toAngle: number,
+  throughAngle: number,
+  steps: number
+): { x: number; y: number }[] {
+  const ccwSpan = normalizeAngle(toAngle - fromAngle); // fromAngle -> toAngle 반시계 방향 각도
+  const throughSpan = normalizeAngle(throughAngle - fromAngle);
+  // throughAngle이 반시계 경로 위에 있으면 반시계로, 아니면 시계로 이동해야 throughAngle을 지난다
+  const goCounterClockwise = throughSpan <= ccwSpan + 1e-9;
+  const span = goCounterClockwise ? ccwSpan : ccwSpan - 2 * Math.PI;
+  const pts: { x: number; y: number }[] = [];
+  for (let s = 0; s <= steps; s++) {
+    const t = s / steps;
+    const ang = fromAngle + span * t;
+    pts.push({ x: cx + r * Math.cos(ang), y: cy + r * Math.sin(ang) });
+  }
+  return pts;
+}
+
+export type OverlapRegion =
+  | { kind: 'lens'; polygon: LatLng[] }
+  /** 한 원이 다른 원을 완전히 포함하는 경우 - 겹치는 부분은 그냥 더 작은 원 전체 */
+  | { kind: 'contains'; center: LatLng; radius: number };
+
+/** 두 위험구역 원이 겹치는 부분을 계산한다. 전혀 안 겹치면 null. */
+export function computeOverlapRegion(
+  centerA: LatLng,
+  radiusA: number,
+  centerB: LatLng,
+  radiusB: number
+): OverlapRegion | null {
+  const refLat = (centerA.latitude + centerB.latitude) / 2;
+  const refLon = (centerA.longitude + centerB.longitude) / 2;
+  const A = toLocalXY(refLat, refLon, centerA.latitude, centerA.longitude);
+  const B = toLocalXY(refLat, refLon, centerB.latitude, centerB.longitude);
+  const dx = B.x - A.x;
+  const dy = B.y - A.y;
+  const d = Math.hypot(dx, dy);
+
+  if (d >= radiusA + radiusB) return null; // 안 겹침
+  if (d <= Math.abs(radiusA - radiusB) || d === 0) {
+    // 한 원이 다른 원을 완전히 포함 (또는 완전히 같은 위치) - 겹치는 부분 = 더 작은 원 전체
+    const smaller = radiusA <= radiusB ? { center: centerA, radius: radiusA } : { center: centerB, radius: radiusB };
+    return { kind: 'contains', center: smaller.center, radius: smaller.radius };
   }
 
-  // 부분 겹침: 표준 렌즈 면적 공식
-  //   A = r1² * acos((d²+r1²-r2²)/(2 d r1))
-  //     + r2² * acos((d²+r2²-r1²)/(2 d r2))
-  //     - 0.5 * sqrt((-d+r1+r2)(d+r1-r2)(d-r1+r2)(d+r1+r2))
-  const r1sq = r1 * r1;
-  const r2sq = r2 * r2;
-  const alpha = Math.acos(clamp((dd * dd + r1sq - r2sq) / (2 * dd * r1), -1, 1));
-  const beta = Math.acos(clamp((dd * dd + r2sq - r1sq) / (2 * dd * r2), -1, 1));
-  const tri = Math.sqrt(
-    Math.max(0, (-dd + r1 + r2) * (dd + r1 - r2) * (dd - r1 + r2) * (dd + r1 + r2))
-  );
-  return r1sq * alpha + r2sq * beta - 0.5 * tri;
-}
+  // 표준 원-원 교차점 공식
+  const a = (d * d - radiusB * radiusB + radiusA * radiusA) / (2 * d);
+  const hSq = radiusA * radiusA - a * a;
+  const h = Math.sqrt(Math.max(0, hSq));
+  const ux = dx / d;
+  const uy = dy / d;
+  const px = A.x + a * ux;
+  const py = A.y + a * uy;
+  const i1 = { x: px - h * uy, y: py + h * ux };
+  const i2 = { x: px + h * uy, y: py - h * ux };
 
-function clamp(v: number, lo: number, hi: number): number {
-  return Math.max(lo, Math.min(hi, v));
-}
+  const angA1 = Math.atan2(i1.y - A.y, i1.x - A.x);
+  const angA2 = Math.atan2(i2.y - A.y, i2.x - A.x);
+  const angAThroughB = Math.atan2(dy, dx); // A에서 B 쪽을 바라보는 방향 (B 쪽으로 볼록한 호)
 
-// 두 원의 중심 거리(평면). 순수.
-export function planarDistance(a: OverlapCircle, b: OverlapCircle): number {
-  const dx = a.x - b.x;
-  const dy = a.y - b.y;
-  return Math.sqrt(dx * dx + dy * dy);
-}
+  const angB1 = Math.atan2(i1.y - B.y, i1.x - B.x);
+  const angB2 = Math.atan2(i2.y - B.y, i2.x - B.x);
+  const angBThroughA = Math.atan2(-dy, -dx); // B에서 A 쪽을 바라보는 방향
 
-// 두 원이 (면적을 가진 형태로) 겹치는지 여부. 접점만 있는 경우는 겹침 아님.
-export function circlesOverlap(a: OverlapCircle, b: OverlapCircle): boolean {
-  return planarDistance(a, b) < a.radiusMeters + b.radiusMeters;
-}
+  const steps = 20;
+  const arcA = sampleArcThrough(A.x, A.y, radiusA, angA1, angA2, angAThroughB, steps); // i1 -> i2
+  const arcB = sampleArcThrough(B.x, B.y, radiusB, angB2, angB1, angBThroughA, steps); // i2 -> i1
 
-// 서로 겹치는 원들을 하나의 그룹(union component)으로 묶는다.
-// 반환: 각 그룹은 원 id 들의 배열. 지도 렌더링에서 그룹 단위로 한 번만
-// (또는 알파를 고정해) 그려 3개 이상 겹침의 알파 누적을 방지한다.
-//
-// 알고리즘: 겹침 그래프의 연결 요소(connected components)를 union-find 로 계산.
-export function groupOverlappingCircles(circles: OverlapCircle[]): string[][] {
-  const parent = circles.map((_, i) => i);
-
-  function find(i: number): number {
-    let root = i;
-    while (parent[root] !== root) root = parent[root];
-    while (parent[i] !== root) {
-      const next = parent[i];
-      parent[i] = root;
-      i = next;
-    }
-    return root;
-  }
-
-  function union(a: number, b: number): void {
-    const ra = find(a);
-    const rb = find(b);
-    if (ra !== rb) parent[ra] = rb;
-  }
-
-  for (let i = 0; i < circles.length; i += 1) {
-    for (let j = i + 1; j < circles.length; j += 1) {
-      if (circlesOverlap(circles[i], circles[j])) union(i, j);
-    }
-  }
-
-  const groups = new Map<number, string[]>();
-  for (let i = 0; i < circles.length; i += 1) {
-    const root = find(i);
-    const bucket = groups.get(root);
-    if (bucket) bucket.push(circles[i].id);
-    else groups.set(root, [circles[i].id]);
-  }
-  return Array.from(groups.values());
-}
-
-// 단일 세그먼트/그룹에 사용할 유효 알파를 계산하는 순수 헬퍼.
-// 겹침 개수에 비례해 알파를 누적하지 않고, base 알파를 상한(maxAlpha)으로 클램프한다.
-// 지도에서 그룹 단위로 렌더링할 때 알파 과다 누적을 막는 보조 수단.
-export function clampAlpha(baseAlpha: number, maxAlpha: number = 0.5): number {
-  return clamp(baseAlpha, 0, maxAlpha);
+  // arcB의 첫 점(i2)은 arcA의 마지막 점과 같으므로 중복 제거하고 이어붙인다
+  const polygonXY = [...arcA, ...arcB.slice(1)];
+  const polygon = polygonXY.map((p) => fromLocalXY(refLat, refLon, p.x, p.y));
+  return { kind: 'lens', polygon };
 }
