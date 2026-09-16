@@ -30,3 +30,7 @@ yarn-error.*
 # generated native folders
 /ios
 /android
+
+# agent/editor metadata
+.agents/
+.kiro/
