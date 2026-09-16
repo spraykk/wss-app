@@ -7,9 +7,11 @@
 // 이를 바로잡기 위해, 반경 임계값(기본 30m) 이내의 지점들을 하나의 zone 으로
 // 병합하는 순수 함수 mergeNearbyZones 를 후처리 단계에 추가한다.
 //
-// 주의: assets/accident-zones.json 은 원본 137행 TAAS export 가 아니라,
-// 중복 지점 패턴(#5)을 재현하기 위한 "대표(representative) 재구성 데이터셋"이다.
-// (원본 데이터는 서브에이전트에 전달되지 않았다.)
+// 데이터: assets/accident-zones.json 은 도로교통공단 TAAS 표준 사고다발지
+// 원본 export(서울 관악구, 137행)이다. 같은 물리적 지점('뿌리약국 부근' 등)이
+// 연도별로 여러 행으로 반복 수록되어 있어 중복 병합(#5) 대상이 된다.
+// 이 파일(JSON)은 원본이므로 수정하지 않고, 병합은 아래 런타임 파이프라인
+// (loadAccidentZones -> postProcessZones -> mergeNearbyZones)에서만 수행한다.
 //
 // 순수 함수(postProcessZones / mergeNearbyZones / haversineMeters)는 배열 인자를
 // 받아 동작하므로 React Native 없이 `node --experimental-strip-types` 로 검증 가능하다.
