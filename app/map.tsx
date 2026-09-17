@@ -1,38 +1,14 @@
 import { useEffect, useRef, useState } from 'react';
 import { Platform, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
-import MapView, { Circle, Marker, Polygon, PROVIDER_GOOGLE } from 'react-native-maps';
+import MapView, { Circle, Marker, PROVIDER_GOOGLE } from 'react-native-maps';
 import * as Location from 'expo-location';
-import { computeOverlapCounts, computeOverlapPairs, loadAccidentZones } from '../src/data/accidentZones';
-import { computeOverlapRegion, OverlapRegion } from '../src/data/overlapGeometry';
-import { planLensRendering } from '../src/data/overlapRender';
+import { computeOverlapCounts, loadAccidentZones } from '../src/data/accidentZones';
 
 const zones = loadAccidentZones();
 // 구역별로 "다른 위험구역과 원이 겹치는 개수"(마커 설명용) - zones와 같은 순서의 배열이라
 // id 중복 문제(accidentZones.ts의 postProcessZones 설명 참고)에서 자유롭다.
+// (computeOverlapCounts 는 내부에서 computeOverlapPairs 로 실제 겹치는 쌍을 센다.)
 const overlapCounts = computeOverlapCounts(zones);
-// 실제로 겹치는 구역 쌍들에 대해서만 "겹치는 부분(렌즈 모양)"을 미리 계산해둔다.
-// 전체 137개 x 137개를 다 계산하지 않고, 이미 겹친다고 확인된 쌍만 계산하므로 가볍다.
-// null(안 겹침)이 아닌 쌍만 남기되, 렌즈 region 과 그 쌍(pair)의 인덱스를 함께 보관해
-// 아래 planLensRendering 으로 "겹침 group 당 한 번만 채우기"를 적용한다.
-const overlapPairs = computeOverlapPairs(zones);
-const overlapItems = overlapPairs
-  .map((pair) => ({
-    pair,
-    region: computeOverlapRegion(
-      { latitude: zones[pair.i].latitude, longitude: zones[pair.i].longitude },
-      zones[pair.i].radiusMeters,
-      { latitude: zones[pair.j].latitude, longitude: zones[pair.j].longitude },
-      zones[pair.j].radiusMeters
-    ),
-  }))
-  .filter((item): item is { pair: { i: number; j: number }; region: OverlapRegion } => item.region !== null);
-// 버그 #4 수정: 3개 이상의 원이 한 지점에서 겹치면 여러 렌즈가 포개져 반투명 fill alpha 가
-// 누적되어 그 지점만 과도하게 진해진다. 렌즈들을 "공통 zone 을 공유하는" 연결 요소(group)로
-// 묶고, group 당 하나의 렌즈에만 fill 을 적용(나머지는 외곽선만)하여 균일한 alpha 를 유지한다.
-const lensPlans = planLensRendering(overlapItems.map((it) => it.pair));
-const OVERLAP_FILL = 'rgba(147,51,234,0.55)';
-const OVERLAP_STROKE = 'rgba(147,51,234,0.9)';
-const hasOverlap = overlapItems.length > 0;
 
 const initialRegion = {
   latitude: zones[0]?.latitude ?? 37.4812,
@@ -84,8 +60,8 @@ export default function MapScreen() {
           showsUserLocation={hasLocationPermission}
           showsMyLocationButton={false}
         >
-          {/* 1) 모든 위험구역을 항상 같은 빨간색으로 그린다 - 겹치는지 여부와 무관하게 원 전체 색은 고정.
-              (겹치는 "부분"만 아래에서 보라색으로 덧그린다) */}
+          {/* 위험구역을 반투명 빨간 원으로 그린다. 원이 겹치는 지점은 반투명 fill 의 alpha 가
+              자연스럽게 누적되어 더 진한 빨강으로 보인다(별도 오버레이 없이 "겹칠수록 진한 빨강"). */}
           {zones.map((z, i) => (
             <View key={z.id}>
               <Circle
@@ -106,31 +82,6 @@ export default function MapScreen() {
               />
             </View>
           ))}
-
-          {/* 2) 실제로 겹치는 "부분"만 보라색으로 덧그린다 (원 전체가 아니라 교집합 영역만).
-              버그 #4: group 당 하나의 렌즈에만 fill 을 적용해 3개 이상 겹침 지점에서도
-              반투명 alpha 가 누적되지 않도록 한다. fill=false 인 렌즈는 외곽선만 그린다. */}
-          {overlapItems.map(({ region }, idx) => {
-            const fillColor = lensPlans[idx].fill ? OVERLAP_FILL : 'rgba(0,0,0,0)';
-            return region.kind === 'lens' ? (
-              <Polygon
-                key={`overlap-${idx}`}
-                coordinates={region.polygon}
-                strokeColor={OVERLAP_STROKE}
-                strokeWidth={1}
-                fillColor={fillColor}
-              />
-            ) : (
-              <Circle
-                key={`overlap-${idx}`}
-                center={region.center}
-                radius={region.radius}
-                strokeColor={OVERLAP_STROKE}
-                strokeWidth={1}
-                fillColor={fillColor}
-              />
-            );
-          })}
         </MapView>
 
         {hasLocationPermission && (
@@ -145,12 +96,10 @@ export default function MapScreen() {
           🔴 빨간 원 = 사고다발지역 (3년간 500m 내 5회 이상). 이 구간을 지날 땐 스마트폰 사용을
           잠시 멈춰보세요.
         </Text>
-        {hasOverlap && (
-          <Text style={styles.legendText}>
-            🟣 보라색 = 위험구역 원끼리 실제로 겹치는 부분만 표시됩니다(원 전체가 아님). 겹치는
-            지점은 점수 계산에도 더 큰 가중치가 반영됩니다.
-          </Text>
-        )}
+        <Text style={styles.legendText}>
+          🔴 겹쳐서 더 진한 빨강 = 위험구역이 중첩된 지점입니다. 점수 계산에도 더 큰 가중치가
+          반영됩니다.
+        </Text>
         <Text style={styles.legendText}>
           ℹ️ 사고건수가 많은 구역일수록(마커를 눌러 확인 가능) 실제 위험도 가중치도 더 높게
           반영됩니다 - 지도에는 동일한 빨간색으로 보이지만 점수 계산은 다릅니다.
