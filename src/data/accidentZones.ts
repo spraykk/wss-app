@@ -22,8 +22,112 @@
 // 검증 스크립트(scripts/verify-dedup.ts)는 이 로더를 호출하지 않고, JSON 을 스스로
 // 파일시스템에서 읽어 순수 함수(mergeNearbyZones 등)에 주입한다 -> src/ 에는 표준 라이브러리 의존 0건.
 import type { AccidentZone } from '../types';
+import { normalizeApiKey } from './apiKey';
 
 const EARTH_RADIUS_METERS = 6371000;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// TAAS(도로교통공단 교통사고분석시스템) 표준 사고다발지 API 수집
+//
+// 실제 엔드포인트(사용자 curl 로 성공 확인):
+//   https://api.data.go.kr/openapi/tn_pubr_public_acdnt_area_api
+//     ?serviceKey=<이미_URL_인코딩된_키>&pageNo=1&numOfRows=1000&type=json
+// - serviceKey 는 "이미 인코딩된 키(%2B,%2F,%3D 포함)"를 그대로 넣어야 성공한다.
+//   이중 인코딩하면 HTTP 400 이 난다 -> normalizeApiKey 로 "정확히 한 번" 인코딩.
+// - 지역명 서버측 필터 파라미터는 없다. 전체(전국 약 12,780건)를 페이지네이션으로
+//   순회하며 클라이언트에서 ctprvnSignguNm 문자열 매칭으로 거른다.
+// - 성공 응답 구조에는 최상위 response 래퍼가 없다: { header, body }.
+//   header.resultCode === '00' 이면 정상. body.items.item[] 에 지점들이 들어온다.
+// - 위경도는 latitude/longitude(문자열, 위경도 맞음)를 쓴다.
+//   acdntMlttdPynInfo 폴리곤은 미터 투영좌표(EPSG)라 위경도로 쓰면 안 된다 -> 무시.
+//
+// 이 함수는 fetch 만 사용하므로 React Native/Expo 런타임에서도 동작한다
+// (node:* 미사용). 실제 네트워크 호출은 외부망이 필요하다.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const TAAS_ENDPOINT = 'https://api.data.go.kr/openapi/tn_pubr_public_acdnt_area_api';
+
+// TAAS 표준 사고다발지 API 의 한 지점(item) 스키마(사용자 curl 로 확인된 실제 필드).
+// 실제로는 더 많은 필드가 오지만 여기서 쓰는 것만 선언한다.
+interface TaasAcdntAreaItem {
+  acdntAreaManageNo?: string; // 관리번호(id)
+  acdntAreaLcNm?: string; // 사고다발지 위치명(name)
+  ctprvnSignguNm?: string; // 시도+시군구명(지역 매칭 대상)
+  occrrncCo?: string; // 발생 건수
+  latitude?: string; // 위도(문자열)
+  longitude?: string; // 경도(문자열)
+}
+
+interface TaasResponse {
+  header?: { resultCode?: string; resultMsg?: string };
+  body?: {
+    items?: { item?: TaasAcdntAreaItem[] };
+    numOfRows?: number;
+    pageNo?: number;
+    totalCount?: number;
+  };
+}
+
+// TAAS 표준 사고다발지 API 에서 전국 데이터를 페이지네이션으로 순회하며,
+// ctprvnSignguNm 이 regionKeyword 를 포함하는 지점만 AccidentZone[] 로 반환한다.
+//
+// @param apiKey        data.go.kr serviceKey (인코딩/원시 무관 - normalizeApiKey 로 정규화)
+// @param regionKeyword 클라이언트측 지역 필터 키워드(예: '관악구'). ctprvnSignguNm 부분일치.
+export async function fetchAccidentZonesFromTAAS(
+  apiKey: string,
+  regionKeyword: string
+): Promise<AccidentZone[]> {
+  const serviceKey = normalizeApiKey(apiKey);
+  const numOfRows = 1000;
+  const zones: AccidentZone[] = [];
+
+  let pageNo = 1;
+  let totalCount = Infinity;
+
+  // 전체 건수를 알기 전에는 첫 페이지를 받아 totalCount 를 확정하고,
+  // 이후 (pageNo-1)*numOfRows < totalCount 동안 순회한다.
+  while ((pageNo - 1) * numOfRows < totalCount) {
+    const url =
+      `${TAAS_ENDPOINT}?serviceKey=${serviceKey}` +
+      `&pageNo=${pageNo}&numOfRows=${numOfRows}&type=json`;
+
+    const res = await fetch(url);
+    if (!res.ok) {
+      throw new Error(`TAAS 응답 오류: HTTP ${res.status} (page ${pageNo})`);
+    }
+
+    const json = (await res.json()) as TaasResponse;
+    const resultCode = json.header?.resultCode;
+    if (resultCode !== '00') {
+      throw new Error(
+        `TAAS resultCode=${resultCode ?? '(없음)'} msg=${json.header?.resultMsg ?? ''}`
+      );
+    }
+
+    totalCount = json.body?.totalCount ?? 0;
+    const items = json.body?.items?.item ?? [];
+
+    for (const row of items) {
+      const region = row.ctprvnSignguNm ?? '';
+      if (!region.includes(regionKeyword)) continue;
+      zones.push({
+        id: row.acdntAreaManageNo ?? `taas-${pageNo}-${zones.length}`,
+        name: row.acdntAreaLcNm ?? '이름미상 사고다발지',
+        latitude: parseFloat(row.latitude ?? '0'),
+        longitude: parseFloat(row.longitude ?? '0'),
+        radiusMeters: 150,
+        accidentCount3y: parseInt(row.occrrncCo ?? '0', 10) || 0,
+        source: 'TAAS_STANDARD',
+      });
+    }
+
+    // 방어: 응답이 비어 있으면 무한 루프 방지 차 즉시 종료.
+    if (items.length === 0) break;
+    pageNo += 1;
+  }
+
+  return zones;
+}
 
 // 폴리곤 근사 반경 축소 계수. 표준데이터 폴리곤을 원으로 단순화하면 실제보다
 // 넓게 잡히는 경향이 있어, 렌더/겹침 판정 시 40% 축소(0.6배)해 과대 표시를 막는다.
