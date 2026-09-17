@@ -3,8 +3,8 @@
 import { useMemo } from 'react';
 import { StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { Link } from 'expo-router';
-import { useWalkSession } from '../src/hooks/useWalkSession.ts';
-import { computeWSS } from '../src/wss/engine.ts';
+import { useWalkSession } from '../src/hooks/useWalkSession';
+import { computeWSS } from '../src/wss/engine';
 
 export default function HomeScreen() {
   const { segments, isTracking, start, stop } = useWalkSession();

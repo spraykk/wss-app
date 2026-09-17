@@ -2,8 +2,8 @@
 // RN/Expo 런타임에서만 동작하며 샌드박스에서는 실행되지 않는다.
 import { useEffect, useState } from 'react';
 import { ScrollView, StyleSheet, Text, View } from 'react-native';
-import { loadHistory } from '../src/storage/history.ts';
-import type { WSSResult } from '../src/types.ts';
+import { loadHistory } from '../src/storage/history';
+import type { WSSResult } from '../src/types';
 
 export default function ReportScreen() {
   const [history, setHistory] = useState<WSSResult[]>([]);

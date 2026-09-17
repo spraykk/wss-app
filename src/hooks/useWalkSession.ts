@@ -11,9 +11,9 @@
 // expo-location 을 사용하므로 샌드박스에서는 실행되지 않는다(타입 정합만 보장).
 import { useCallback, useRef, useState } from 'react';
 import * as Location from 'expo-location';
-import type { WalkSegment, WeatherCondition, TimeBand } from '../types.ts';
-import { buildSegmentKey } from './segmentKey.ts';
-import { getCurrentTimeBand } from '../wss/context.ts';
+import type { WalkSegment, WeatherCondition, TimeBand } from '../types';
+import { buildSegmentKey } from './segmentKey';
+import { getCurrentTimeBand } from '../wss/context';
 
 export interface WalkContextSample {
   zoneId: string;

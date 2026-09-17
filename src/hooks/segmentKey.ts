@@ -9,7 +9,7 @@
 // FIX: riskIntensity 를 0.25 간격 버킷으로 양자화(bucketize)해 키를 안정화한다.
 // (대표 zone id 가 있으면 그것도 키에 포함해 물리적으로 다른 지역은 확실히 분리.)
 // 이 순수 함수는 React Native 없이 `node --experimental-strip-types` 로 검증 가능하다.
-import type { WeatherCondition, TimeBand } from '../types.ts';
+import type { WeatherCondition, TimeBand } from '../types';
 
 // riskIntensity 버킷 크기(위험강도 0.25 단위). GPS 노이즈 수준의 미세 변동을
 // 같은 버킷으로 흡수하면서, 유의미한 위험도 변화는 다른 버킷으로 분리한다.

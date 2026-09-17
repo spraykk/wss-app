@@ -14,12 +14,35 @@
 // 인접 8건 클러스터는 합계로 하나가 된다"를 검증한다. JSON 원본은 수정하지 않고
 // 런타임 병합만 검증한다.
 import { register } from 'node:module';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { dirname, join } from 'node:path';
 register('./ts-transpile-hook.mjs', import.meta.url);
 
-const { loadRawAccidentZones, mergeNearbyZones, postProcessZones, haversineMeters } =
+// 앱 코드(src/data/accidentZones.ts)는 이제 JSON 을 Metro 의 require(...) 로 읽으므로
+// 그 로더(loadRawAccidentZones)는 Node 에서 그대로 실행하면 안 된다. 대신 검증 스크립트가
+// JSON 을 직접 파일시스템에서 읽어(node:fs) 순수 함수(mergeNearbyZones 등)에 주입한다.
+// 이렇게 해서 node:* 의존은 scripts/ 안에만 남고 src/ 에는 0건이 된다.
+const { mergeNearbyZones, postProcessZones, haversineMeters } =
   await import('../src/data/accidentZones.ts');
 const { computeRiskIntensity, computeZoneSeverity, computeLocationWeight } =
   await import('../src/wss/weights.ts');
+
+interface AccidentZoneRow {
+  id: string;
+  name: string;
+  latitude: number;
+  longitude: number;
+  radiusMeters: number;
+  accidentCount3y: number;
+  source: 'TAAS_STANDARD' | 'SAMPLE_PLACEHOLDER';
+}
+
+function loadRawAccidentZones(): AccidentZoneRow[] {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const jsonPath = join(here, '..', 'assets', 'accident-zones.json');
+  return JSON.parse(readFileSync(jsonPath, 'utf8')) as AccidentZoneRow[];
+}
 
 const EPS = 1e-9;
 const THRESHOLD = 30;
@@ -39,7 +62,10 @@ function assertClose(label: string, actual: number, expected: number): void {
 }
 
 const raw = loadRawAccidentZones();
-const merged = postProcessZones(raw);
+// 병합 의미(merge semantics) 검증에는 순수 병합 결과를 그대로 사용한다. postProcessZones 는
+// 병합 뒤에 id 고유화(#index)와 반경 스케일(ZONE_RADIUS_SCALE)까지 적용하므로 원본 id/radius
+// 기준 비교에는 mergeNearbyZones 를 직접 쓴다. postProcessZones 의 후처리는 (e)에서 별도 검증.
+const merged = mergeNearbyZones(raw, THRESHOLD);
 
 // (a) '뿌리약국 부근' 근접 중복이 원본에 9건 존재하고, 병합 후 확실히 줄어드는지.
 const rawPpuri = raw.filter((z) => z.name.includes('뿌리약국 부근'));
@@ -170,6 +196,38 @@ assert(
   '병합 결과 zone 수 < 원시 zone 수',
   mergedDirect.length < raw.length,
   `${mergedDirect.length} < ${raw.length}`
+);
+
+// (e) postProcessZones 후처리(id 고유화 + 반경 스케일)가 병합 의미(count)를 바꾸지 않고,
+//     id 가 모두 고유하며, 반경이 ZONE_RADIUS_SCALE 만큼 축소되는지 검증한다.
+const processed = postProcessZones(raw);
+assert(
+  'postProcessZones zone 수 = mergeNearbyZones zone 수(후처리는 병합 개수를 바꾸지 않음)',
+  processed.length === mergedDirect.length,
+  `${processed.length} vs ${mergedDirect.length}`
+);
+const processedIds = new Set(processed.map((z) => z.id));
+assert(
+  'postProcessZones 결과 id 가 모두 고유함',
+  processedIds.size === processed.length,
+  `${processedIds.size} unique / ${processed.length} total`
+);
+const RADIUS_SCALE = 0.6;
+const radiusScaledOk = processed.every((z, idx) => {
+  const expected = mergedDirect[idx].radiusMeters * RADIUS_SCALE;
+  return Math.abs(z.radiusMeters - expected) <= 1e-6;
+});
+assert('postProcessZones 가 반경을 ZONE_RADIUS_SCALE(0.6)로 축소', radiusScaledOk);
+const countsPreserved = processed.every(
+  (z, idx) => z.accidentCount3y === mergedDirect[idx].accidentCount3y
+);
+assert('postProcessZones 가 accidentCount3y(보정값)를 보존', countsPreserved);
+// riskIntensity 는 count 기반이므로 후처리 후에도 병합 riskIntensity 와 동일해야 한다.
+const processedIntensity = computeRiskIntensity(processed.map((z) => z.accidentCount3y));
+assertClose(
+  'postProcessZones riskIntensity = 병합 riskIntensity(반경 스케일은 무관)',
+  processedIntensity,
+  mergedIntensity
 );
 
 if (failures > 0) {

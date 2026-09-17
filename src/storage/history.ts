@@ -2,7 +2,7 @@
 //
 // WSSResult[] 를 로컬에 JSON 으로 저장하고 불러온다. RN 런타임에서만 동작한다.
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import type { WSSResult } from '../types.ts';
+import type { WSSResult } from '../types';
 
 const HISTORY_KEY = '@wss/history';
 const MAX_HISTORY = 200;

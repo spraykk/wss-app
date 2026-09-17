@@ -13,8 +13,8 @@
 // KMA 초단기실황 규칙: base_time 은 매시각 정시(HH00) 단위이며, HH00 자료는
 // 대략 HH10 에 공개된다. 따라서 매시 :10 이전에는 "직전 시각"을 사용해야 하고,
 // 00:10 이전에는 "전날 23:00" 으로 롤백한다. 위를 불변으로 구현한다.
-import type { WeatherCondition } from '../types.ts';
-import { getKmaApiKey } from './apiKey.ts';
+import type { WeatherCondition } from '../types';
+import { getKmaApiKey } from './apiKey';
 
 // 초단기실황 자료 공개 지연(분). base_time HH00 자료는 HH10 경 공개된다.
 export const ULTRA_SRT_NCST_PUBLISH_DELAY_MIN = 10;

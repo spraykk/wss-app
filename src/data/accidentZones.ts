@@ -15,12 +15,51 @@
 //
 // 순수 함수(postProcessZones / mergeNearbyZones / haversineMeters)는 배열 인자를
 // 받아 동작하므로 React Native 없이 `node --experimental-strip-types` 로 검증 가능하다.
-import { readFileSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
-import { dirname, join } from 'node:path';
-import type { AccidentZone } from '../types.ts';
+//
+// 로딩 방식(중요): React Native/Expo 런타임에는 Node 표준 라이브러리(fs/url/path 등)가
+// 없다. 따라서 JSON 은 Metro 번들러가 번들에 포함시키는 `require(...)` 로 읽는다.
+// (Metro 는 .json 을 정적으로 번들에 넣는다.) Node 표준 라이브러리 import 는 쓰지 않는다.
+// 검증 스크립트(scripts/verify-dedup.ts)는 이 로더를 호출하지 않고, JSON 을 스스로
+// 파일시스템에서 읽어 순수 함수(mergeNearbyZones 등)에 주입한다 -> src/ 에는 표준 라이브러리 의존 0건.
+import type { AccidentZone } from '../types';
 
 const EARTH_RADIUS_METERS = 6371000;
+
+// 폴리곤 근사 반경 축소 계수. 표준데이터 폴리곤을 원으로 단순화하면 실제보다
+// 넓게 잡히는 경향이 있어, 렌더/겹침 판정 시 40% 축소(0.6배)해 과대 표시를 막는다.
+export const ZONE_RADIUS_SCALE = 0.6;
+
+// assets/accident-zones.json 이 없거나 비었을 때의 안전 폴백(샘플) zone 목록.
+// 앱이 데이터 없이도 최소한의 지도/알림 동작을 유지하도록 한다.
+export const SAMPLE_PLACEHOLDER_ZONES: AccidentZone[] = [
+  {
+    id: 'sample-1',
+    name: '서울대입구역 사거리',
+    latitude: 37.4812,
+    longitude: 126.9528,
+    radiusMeters: 150,
+    accidentCount3y: 6,
+    source: 'SAMPLE_PLACEHOLDER',
+  },
+  {
+    id: 'sample-2',
+    name: '신림역 대로변',
+    latitude: 37.4844,
+    longitude: 126.9296,
+    radiusMeters: 200,
+    accidentCount3y: 8,
+    source: 'SAMPLE_PLACEHOLDER',
+  },
+  {
+    id: 'sample-3',
+    name: '관악구청 앞 교차로',
+    latitude: 37.4784,
+    longitude: 126.9516,
+    radiusMeters: 120,
+    accidentCount3y: 5,
+    source: 'SAMPLE_PLACEHOLDER',
+  },
+];
 
 // 두 위경도 좌표 사이의 대권거리(great-circle distance)를 미터로 반환하는 순수 헬퍼.
 export function haversineMeters(
@@ -137,21 +176,36 @@ export function mergeNearbyZones(
   });
 }
 
-// 원시 zone 후처리: 현재는 인접 중복 지점 병합(#5)만 수행한다. 순수/주입 가능.
+// 원시 zone 후처리 파이프라인(순수/주입 가능):
+//  1) 인접 중복 지점 병합(#5, mergeNearbyZones) — 우선순위 최상(과대계상 해소).
+//  2) 반경 스케일 축소(ZONE_RADIUS_SCALE) — 렌더/겹침 과대 표시 방지.
+//  3) id 고유화 — 원본 데이터는 동일 id 가 여러 행에 반복되므로(TAAS 표준),
+//     병합 후에도 남을 수 있는 중복 id 에 배열 인덱스를 붙여 React key/식별을 고유화.
+// 병합을 먼저 수행하므로 id 고유화가 #5 병합 로직과 충돌하지 않는다.
 export function postProcessZones(raw: AccidentZone[]): AccidentZone[] {
-  return mergeNearbyZones(raw);
+  const merged = mergeNearbyZones(raw);
+  return merged.map((zone, index) => ({
+    ...zone,
+    id: `${zone.id}#${index}`,
+    radiusMeters: zone.radiusMeters * ZONE_RADIUS_SCALE,
+  }));
 }
 
 // assets/accident-zones.json 을 읽어 AccidentZone[] 로 반환하는 원시 로더.
-// 모듈 해석과 분리하기 위해 fs.readFileSync + JSON.parse 를 사용한다.
+// React Native/Expo 런타임에는 파일시스템(fs) 이 없으므로 Metro 가 번들에 포함하는
+// require(...) 로 JSON 을 읽는다. JSON 이 없거나 비었으면 SAMPLE_PLACEHOLDER_ZONES 로 폴백.
 export function loadRawAccidentZones(): AccidentZone[] {
-  const here = dirname(fileURLToPath(import.meta.url));
-  const jsonPath = join(here, '..', '..', 'assets', 'accident-zones.json');
-  const raw = readFileSync(jsonPath, 'utf8');
-  return JSON.parse(raw) as AccidentZone[];
+  try {
+    // Metro 는 이 require 를 정적으로 해석해 JSON 을 번들에 포함시킨다.
+    const raw = require('../../assets/accident-zones.json') as AccidentZone[];
+    if (!Array.isArray(raw) || raw.length === 0) return SAMPLE_PLACEHOLDER_ZONES;
+    return raw;
+  } catch {
+    return SAMPLE_PLACEHOLDER_ZONES;
+  }
 }
 
-// 앱에서 사용하는 진입점: 원시 데이터 로드 후 중복 병합된 zone 목록을 반환한다.
+// 앱에서 사용하는 진입점: 원시 데이터 로드 후 중복 병합/후처리된 zone 목록을 반환한다.
 export function loadAccidentZones(): AccidentZone[] {
   return postProcessZones(loadRawAccidentZones());
 }
