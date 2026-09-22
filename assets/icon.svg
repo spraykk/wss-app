@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  시안 B — 차분한 틸/청록~슬레이트, 레이더/웨이브(동심 호) 안전 존 모티프
+  앱 아이콘 (보행안전 WSS) — 1024x1024
+  - 불투명 배경(알파 없음 — App Store 요구). 둥근 모서리 미적용(시스템이 마스킹).
+  - 사람/보행자 심볼 없음. PNG 내보낼 때 알파 채널을 반드시 끄세요.
+  모티프: 하단 기준점에서 퍼지는 동심 호(레이더 스윕) = 주변 위험/안전 존 스캔.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="bgB" x1="0" y1="0" x2="0" y2="1024" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#0f3b45"/>
+      <stop offset="1" stop-color="#14515e"/>
+    </linearGradient>
+  </defs>
+
+  <!-- 불투명 배경 -->
+  <rect x="0" y="0" width="1024" height="1024" fill="url(#bgB)"/>
+
+  <!-- 레이더 동심 호 (하단 원점에서 위로 퍼짐) -->
+  <g fill="none" stroke-linecap="round">
+    <path d="M226 700 A286 286 0 0 1 798 700" stroke="#4fd1c5" stroke-width="30" opacity="0.35"/>
+    <path d="M312 700 A200 200 0 0 1 712 700" stroke="#5fe3d6" stroke-width="30" opacity="0.60"/>
+    <path d="M400 700 A112 112 0 0 1 624 700" stroke="#7ff2e6" stroke-width="30" opacity="0.90"/>
+  </g>
+
+  <!-- 원점 도트 (현재 위치) -->
+  <circle cx="512" cy="700" r="40" fill="#e6fffb"/>
+</svg>

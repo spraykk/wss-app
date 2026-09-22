@@ -1,5 +1,9 @@
 # 앱 아이콘 / 스플래시 시안 (재디자인)
 
+> ✅ **시안 B 채택됨.** `assets/icon.svg` / `assets/splash.svg` 가 정식본입니다(시안 B 복사본). 아래 A/B/C 시안 설명은 선택 이력 참고용으로 남겨둡니다. 선택되지 않은 A/C 및 legacy 는 `assets/icon-candidates/` · `assets/splash-candidates/` 에 그대로 보관됩니다.
+>
+> **다음 단계(사용자 로컬)**: `assets/icon.svg` / `assets/splash.svg` 를 PNG 로 변환(배경 불투명 `#0f3b45`, 아이콘 1024×1024, **알파 끄기**) → `assets/icon.png` / `assets/splash.png` 로 저장 → `app.json` 에 연결. 지금은 PNG 가 없으므로 `app.json` 미연결 상태(빌드 안전)를 유지합니다.
+
 기존 시안(초록 배경 + 보행자 사람 심볼 + 노란 경고 점선 링)이 어색하다는 피드백을 반영해, **사람(보행자) 심볼을 제거**하고 **더 세련된 색상**으로 방향을 바꾼 3개 시안을 준비했습니다. 모두 추상/기하 모티프이며 안전·위치·감지 컨셉을 담았습니다.
 
 > 모든 시안은 **1024×1024, 불투명 배경(알파 없음 — App Store 요구), 둥근 모서리 미적용(시스템이 마스킹)** 입니다. 아이콘에는 앱 이름 텍스트를 넣지 않았습니다(스플래시에만 텍스트 포함).
@@ -31,37 +35,40 @@
 | B | `assets/splash-candidates/splash-b.svg` | `#0f3b45` |
 | C | `assets/splash-candidates/splash-c.svg` | `#23272e` |
 
-## 하나를 고른 뒤 채택 → PNG 변환 → app.json 연결
+## 채택 완료(시안 B) → PNG 변환 → app.json 연결
 
 > **중요**: 이 샌드박스에는 SVG→PNG 변환 도구가 없고 외부망이 차단되어 **PNG 를 여기서 만들 수 없습니다.** 아래 절차는 사용자 로컬(또는 온라인 도구)에서 수행하세요. 변환 상세는 [`docs/app-assets.md`](../docs/app-assets.md) 참조.
 
-### 1) 시안 채택 (SVG 확정)
+### 1) 시안 채택 (SVG 확정) — ✅ 완료
 
-고른 시안을 정식 파일명으로 복사합니다(예: 시안 A 선택 시).
+시안 B 를 정식 파일명으로 복사 완료했습니다. 정식본은 다음과 같습니다.
 
 ```bash
-cp assets/icon-candidates/icon-a.svg   assets/icon.svg
-cp assets/splash-candidates/splash-a.svg assets/splash.svg
+cp assets/icon-candidates/icon-b.svg     assets/icon.svg
+cp assets/splash-candidates/splash-b.svg assets/splash.svg
 ```
+
+- 정식 아이콘: `assets/icon.svg` (시안 B — 딥 틸/청록 `#0f3b45`→`#14515e`, 레이더 동심 호 + 현재위치 도트)
+- 정식 스플래시: `assets/splash.svg` (동일 톤)
+- 선택되지 않은 A/C 및 legacy 는 `assets/icon-candidates/` · `assets/splash-candidates/` 에 보관.
 
 ### 2) PNG 로 변환 (알파 끄기 필수)
 
-App Store 아이콘은 **알파 채널이 없어야** 심사를 통과합니다. 시안 SVG 는 이미 불투명 배경입니다.
+App Store 아이콘은 **알파 채널이 없어야** 심사를 통과합니다. 시안 SVG 는 이미 불투명 배경입니다. 배경 불투명 색은 **`#0f3b45`**(시안 B) 로 채우고, 아이콘은 **1024×1024**, 내보낼 때 **알파(투명 배경) 끄기**.
 
 - **온라인**: [CloudConvert SVG→PNG](https://cloudconvert.com/svg-to-png) 에 `assets/icon.svg` 업로드 → **Width 1024 / Height 1024**, 투명 배경 옵션 **끄기** → `assets/icon.png` 로 저장. 스플래시도 동일(권장 1242×2688) → `assets/splash.png`.
-- **로컬 CLI (rsvg-convert)** — 배경색은 고른 시안에 맞추세요:
+- **로컬 CLI (rsvg-convert)** — 배경색은 시안 B `#0f3b45`:
 
 ```bash
-# 예: 시안 A (#1e2a55)
-rsvg-convert -w 1024 -h 1024 -b "#1e2a55" assets/icon.svg   -o assets/icon.png
-rsvg-convert -w 1242 -h 2688 -b "#1e2a55" assets/splash.svg -o assets/splash.png
+rsvg-convert -w 1024 -h 1024 -b "#0f3b45" assets/icon.svg   -o assets/icon.png
+rsvg-convert -w 1242 -h 2688 -b "#0f3b45" assets/splash.svg -o assets/splash.png
 ```
 
 Android 적응형 아이콘 foreground(`assets/adaptive-icon.png`)는 안전 영역 여백을 고려해 별도로 만드세요.
 
 ### 3) app.json 연결 (PNG 추가 후에만)
 
-실제 PNG 를 넣은 뒤 `app.json` 의 `expo` 블록에 연결합니다(`backgroundColor` 는 고른 시안 색으로). 없는 PNG 를 미리 참조하면 빌드가 실패하므로, **PNG 를 추가한 다음** 연결하세요. 상세 예시는 [`docs/app-assets.md`](../docs/app-assets.md) 참조.
+실제 PNG 를 넣은 뒤 `app.json` 의 `expo` 블록에 연결합니다(`backgroundColor` 는 시안 B `#0f3b45`). 없는 PNG 를 미리 참조하면 빌드가 실패하므로, **PNG 를 추가한 다음** 연결하세요. 지금은 PNG 가 없어 미연결 상태를 유지합니다. 상세 예시는 [`docs/app-assets.md`](../docs/app-assets.md) 참조.
 
 ## 기존 플레이스홀더 정리
 
