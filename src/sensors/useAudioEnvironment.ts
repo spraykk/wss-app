@@ -23,6 +23,16 @@ function readAudioEnvironmentSafe(): AudioEnvironment {
 }
 
 /**
+ * 훅이 아닌 곳(백그라운드 태스크 등)에서 현재 오디오 환경을 1회 읽는 동기 스냅샷.
+ * FEAT-004: 백그라운드 세션 파이프라인이 React 훅을 쓸 수 없으므로 순간값이 필요하다.
+ * FEAT-001 한계: 딥 백그라운드에서는 네이티브 오디오 세션이 비활성이라 값이 stale/미지원일
+ * 수 있다 -> 그 경우 안전 축소값(open ear)을 반환한다(best-effort, 오탐 없음).
+ */
+export function readAudioEnvironmentSnapshot(): AudioEnvironment {
+  return readAudioEnvironmentSafe();
+}
+
+/**
  * 현재 오디오 환경을 반환하는 훅. 자동 감지 결과를 그대로 노출한다.
  * 수동 토글/사용자 입력은 제공하지 않는다(감지 전용).
  */

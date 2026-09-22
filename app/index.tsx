@@ -32,7 +32,7 @@ export default function HomeScreen() {
 
       <TouchableOpacity
         style={[styles.button, isTracking ? styles.stop : styles.start]}
-        onPress={() => (isTracking ? stop() : void start())}
+        onPress={() => (isTracking ? void stop() : void start())}
       >
         <Text style={styles.buttonText}>{isTracking ? '보행 종료' : '보행 시작'}</Text>
       </TouchableOpacity>

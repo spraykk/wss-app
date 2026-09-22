@@ -336,6 +336,21 @@ export function computeOverlapPairs(zones: AccidentZone[]): { i: number; j: numb
   return pairs;
 }
 
+// 주어진 위치(lat/lon)를 원 안에 포함(enclose)하는 위험구역들을 반환하는 순수 함수.
+// 중심으로부터의 대권거리가 반경 이내면 그 구역 안에 있다고 본다. 여러 구역이 겹치는
+// 지점이면 겹친 구역을 모두 반환한다(riskIntensity 는 이들 severity 합으로 계산).
+// FEAT-004 백그라운드 태스크가 현재 위치의 zone/riskIntensity 를 계산할 때 사용한다.
+export function findEnclosingZones(
+  zones: AccidentZone[],
+  latitude: number,
+  longitude: number
+): AccidentZone[] {
+  return zones.filter(
+    (zone) =>
+      haversineMeters(latitude, longitude, zone.latitude, zone.longitude) <= zone.radiusMeters
+  );
+}
+
 // zones 와 같은 순서의 배열로, 각 zone 이 "다른 위험구역과 원이 겹치는 개수"를 반환하는 순수 함수.
 // 마커 설명(겹침 곳 수)과 범례 표시에 사용한다.
 export function computeOverlapCounts(zones: AccidentZone[]): number[] {

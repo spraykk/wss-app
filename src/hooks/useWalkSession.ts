@@ -1,116 +1,142 @@
-// 보행 세션 훅 (버그 #1, HIGH) - GPS 샘플을 WalkSegment 로 그룹화
+// 보행 세션 훅 (FEAT-004 리팩터) - 지속 세션에 대한 "얇은 포그라운드 VIEW"
 //
-// GPS 위치 샘플이 들어올 때마다 현재 맥락(대표 zone, riskIntensity, 날씨, 시간대,
-// 이어폰 착용)으로 "세그먼트 키"를 만들고, 키가 바뀌면 새 세그먼트를 시작한다.
+// 이전(FEAT-001~003): 이 훅이 watchPositionAsync 구독과 세그먼트 누적(ingestSample)을
+// "소유"하는 포그라운드 전용 샘플링 루프였다. 그래서 앱을 끄면 측정이 멈췄다.
 //
-// 버그 #1: 기존 키는 riskIntensity.toFixed(4) 를 그대로 썼다. riskIntensity 는
-// 연속 값이라 GPS 노이즈로 인한 미세 변동에도 매번 새 키 -> 세그먼트 과분할.
-// FIX: 순수 함수 buildSegmentKey 로 riskIntensity 를 0.25 버킷으로 양자화하여
-// 키를 안정화한다. 키 생성 로직은 src/hooks/segmentKey.ts 로 분리해 검증한다.
+// FEAT-004: "보행 시작 후 앱을 꺼도 계속 측정"을 위해 샘플->세그먼트->WSS->알림
+// 파이프라인을 백그라운드 태스크(src/session/backgroundTask.ts)로 옮기고, 세션 상태는
+// AsyncStorage(src/session/sessionStore.ts)에 지속한다. 이제 이 훅은 더 이상 샘플링
+// 루프를 소유하지 않는다:
+//   - start(): 위치/알림 권한 요청 + 지오펜싱 시작(FEAT-003 registerNearbyGeofences,
+//     백그라운드 세션 콜백 연결) + 스토어에 세션 active 표시.
+//   - 훅 본체: 지속된 세션을 주기적으로 읽어(VIEW 새로고침) live WSS 를 렌더한다.
+//     이 새로고침은 UI 표시용일 뿐 측정 루프가 아니다(측정은 백그라운드 이벤트 기반).
+//   - stop(): 지오펜싱 해제(stopGeofencing) + 세션 종료 확정 + history 저장(saveResult).
+//   - 앱 재실행 시: 스토어의 active 세션을 복원해 진행 중 세션을 그대로 보여준다.
 //
-// expo-location 을 사용하므로 샌드박스에서는 실행되지 않는다(타입 정합만 보장).
-import { useCallback, useRef, useState } from 'react';
+// expo-location/expo-task-manager/AsyncStorage 를 사용하므로 샌드박스에서는 실행되지
+// 않는다(타입 정합만 보장). 세그먼트 누적 규칙은 순수 리듀서(reduceSession)로 검증한다.
+import { useCallback, useEffect, useRef, useState } from 'react';
 import * as Location from 'expo-location';
-import type { WalkSegment, WeatherCondition, TimeBand } from '../types';
-import { buildSegmentKey } from './segmentKey';
-import { getCurrentTimeBand } from '../wss/context';
-import { useAudioEnvironment } from '../sensors/useAudioEnvironment';
-import { isEarEffectivelyOccluded } from '../sensors/audioState';
+import type { WalkSegment } from '../types';
+import { computeWSS } from '../wss/engine';
+import { loadAccidentZones } from '../data/accidentZones';
+import {
+  registerNearbyGeofences,
+  stopGeofencing,
+} from '../sensors/geofenceController';
+import {
+  loadActiveSession,
+  saveActiveSession,
+  clearActiveSession,
+  emptyActiveSession,
+} from '../session/sessionStore';
+import type { ActiveSession } from '../session/sessionStore';
+import {
+  makeGeofenceSessionCallbacks,
+  resetSessionTaskState,
+} from '../session/backgroundTask';
+import { requestNotificationPermission } from '../notifications/alerts';
+import { saveResult } from '../storage/history';
 
-export interface WalkContextSample {
-  zoneId: string;
-  riskIntensity: number;
-  weather: WeatherCondition;
-  // FEAT-002: 차음 여부의 소스가 수동 토글 -> 자동 감지 오디오 상태로 바뀌었다.
-  // 상위 샘플 파이프라인이 값을 넘기지 않으면(생략하면) useAudioEnvironment() 로
-  // 자동 감지한 오디오 환경에서 isEarEffectivelyOccluded 로 파생해 채운다.
-  // 수동 토글은 제공하지 않는다.
-  isEarOccluded?: boolean;
-  smartphoneUseMinutes: number;
-  walkMinutes: number;
-  timeBand?: TimeBand;
-}
+// WalkContextSample 계약은 순수 리듀서 모듈에 단일 소스로 둔다(중복 정의 제거).
+export type { WalkContextSample } from '../session/sessionReducer';
+
+// VIEW 새로고침 주기(ms). 지속된 세션을 화면에 반영하기 위한 UI 폴링일 뿐,
+// 측정(샘플링) 루프가 아니다. 실제 측정은 백그라운드 지오펜스/위치 이벤트로만 일어난다.
+const VIEW_REFRESH_MS = 1000;
 
 export interface UseWalkSession {
   segments: WalkSegment[];
   isTracking: boolean;
   start: () => Promise<void>;
-  stop: () => void;
-  // GPS/센서 파이프라인이 새 샘플을 만들 때마다 호출한다.
-  ingestSample: (sample: WalkContextSample) => void;
+  stop: () => Promise<void>;
 }
 
 export function useWalkSession(): UseWalkSession {
-  const [segments, setSegments] = useState<WalkSegment[]>([]);
-  const [isTracking, setIsTracking] = useState(false);
-  const subscriptionRef = useRef<Location.LocationSubscription | null>(null);
-  // 현재 진행 중인 세그먼트의 키(과분할 방지를 위한 안정화된 키).
-  const currentKeyRef = useRef<string | null>(null);
+  const [session, setSession] = useState<ActiveSession>(emptyActiveSession());
+  const isMountedRef = useRef(true);
 
-  // FEAT-002: 자동 감지 오디오 환경. 이 값이 차음(isEarOccluded)의 소스다(수동 토글 없음).
-  const audioEnv = useAudioEnvironment();
-  const audioEarOccluded = isEarEffectivelyOccluded(audioEnv);
-  // 인터벌/콜백 클로저가 stale 값을 읽지 않도록 최신 감지값을 ref 로도 보관한다.
-  const audioEarOccludedRef = useRef<boolean>(audioEarOccluded);
-  audioEarOccludedRef.current = audioEarOccluded;
-
-  const ingestSample = useCallback((sample: WalkContextSample): void => {
-    const timeBand = sample.timeBand ?? getCurrentTimeBand();
-    // 차음 여부는 샘플이 명시하지 않으면 자동 감지 오디오 상태에서 파생한다.
-    const isEarOccluded = sample.isEarOccluded ?? audioEarOccludedRef.current;
-    const key = buildSegmentKey({
-      zoneId: sample.zoneId,
-      riskIntensity: sample.riskIntensity,
-      weather: sample.weather,
-      timeBand,
-      isEarOccluded,
-    });
-
-    setSegments((prev) => {
-      if (currentKeyRef.current === key && prev.length > 0) {
-        // 같은 안정화 키 -> 기존 세그먼트에 누적(과분할 방지).
-        const last = prev[prev.length - 1];
-        const updated: WalkSegment = {
-          ...last,
-          smartphoneUseMinutes: last.smartphoneUseMinutes + sample.smartphoneUseMinutes,
-          walkMinutes: last.walkMinutes + sample.walkMinutes,
-        };
-        return [...prev.slice(0, -1), updated];
-      }
-      // 키가 바뀜 -> 새 세그먼트 시작.
-      currentKeyRef.current = key;
-      const segment: WalkSegment = {
-        regionId: sample.zoneId,
-        smartphoneUseMinutes: sample.smartphoneUseMinutes,
-        walkMinutes: sample.walkMinutes,
-        riskIntensity: sample.riskIntensity,
-        weather: sample.weather,
-        timeBand,
-        isEarOccluded,
-      };
-      return [...prev, segment];
-    });
+  // 지속된 세션을 읽어 상태에 반영(VIEW 새로고침). 측정과 무관한 읽기 전용.
+  const refresh = useCallback(async (): Promise<void> => {
+    const loaded = await loadActiveSession();
+    if (isMountedRef.current) setSession(loaded);
   }, []);
+
+  // 마운트 시(=앱 재실행 포함) active 세션을 복원하고, 추적 중이면 주기적으로 VIEW 갱신.
+  useEffect(() => {
+    isMountedRef.current = true;
+    void refresh();
+    const timer = setInterval(() => {
+      void refresh();
+    }, VIEW_REFRESH_MS);
+    return () => {
+      isMountedRef.current = false;
+      clearInterval(timer);
+    };
+  }, [refresh]);
 
   const start = useCallback(async (): Promise<void> => {
-    const { status } = await Location.requestForegroundPermissionsAsync();
-    if (status !== 'granted') return;
-    setIsTracking(true);
-    subscriptionRef.current = await Location.watchPositionAsync(
-      { accuracy: Location.Accuracy.BestForNavigation, timeInterval: 1000, distanceInterval: 1 },
-      () => {
-        // 실제 앱에서는 여기서 위치->대표 zone/riskIntensity 를 계산한 뒤
-        // ingestSample 을 호출한다. (zone 매칭 로직은 화면/상위 계층에서 주입)
-      }
-    );
+    // 권한: 백그라운드 측정을 위해 위치(가능하면 Always) + 알림 권한을 요청한다.
+    const fg = await Location.requestForegroundPermissionsAsync();
+    if (fg.status !== 'granted') return;
+    // 백그라운드 위치는 있으면 좋지만 없어도 포그라운드/지오펜스로 동작하도록 best-effort.
+    try {
+      await Location.requestBackgroundPermissionsAsync();
+    } catch {
+      // 미지원/거부 -> 무시(지오펜스는 포그라운드 권한만으로도 부분 동작).
+    }
+    await requestNotificationPermission();
+
+    // 세션 상태를 active 로 표시하고 지속(재실행 복원의 기준점).
+    const startedSession: ActiveSession = {
+      ...emptyActiveSession(),
+      startedAt: Date.now(),
+      isTracking: true,
+    };
+    resetSessionTaskState();
+    await saveActiveSession(startedSession);
+    if (isMountedRef.current) setSession(startedSession);
+
+    // 현재 위치 기준 근접 위험구역에 지오펜스를 등록하고, 백그라운드 세션 콜백을 연결한다.
+    // 콜백/지오펜스는 이벤트 기반(region ENTER / 정밀 위치)이며 타이머를 쓰지 않는다.
+    try {
+      const here = await Location.getCurrentPositionAsync({
+        accuracy: Location.Accuracy.Balanced,
+      });
+      const zones = loadAccidentZones();
+      await registerNearbyGeofences(
+        zones,
+        { latitude: here.coords.latitude, longitude: here.coords.longitude },
+        makeGeofenceSessionCallbacks()
+      );
+    } catch {
+      // 위치 취득/지오펜스 등록 실패 -> 세션은 active 로 유지(다음 위치에서 재시도 가능).
+    }
   }, []);
 
-  const stop = useCallback((): void => {
-    subscriptionRef.current?.remove();
-    subscriptionRef.current = null;
-    currentKeyRef.current = null;
-    setIsTracking(false);
+  const stop = useCallback(async (): Promise<void> => {
+    // 지오펜스/정밀 추적 해제.
+    await stopGeofencing();
+    resetSessionTaskState();
+
+    // 최종 세션을 읽어 WSS 결과를 history 에 저장.
+    const finalSession = await loadActiveSession();
+    if (finalSession.segments.length > 0) {
+      const result = computeWSS(finalSession.segments);
+      await saveResult(result);
+    }
+
+    // 진행 중 세션 파기.
+    await clearActiveSession();
+    const cleared = emptyActiveSession();
+    if (isMountedRef.current) setSession(cleared);
   }, []);
 
-  return { segments, isTracking, start, stop, ingestSample };
+  return {
+    segments: session.segments,
+    isTracking: session.isTracking,
+    start,
+    stop,
+  };
 }
