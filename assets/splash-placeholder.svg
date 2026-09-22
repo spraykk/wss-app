@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  플레이스홀더 스플래시 시안 (보행안전 WSS)
+  배경색 #1a7f37 위에 아이콘 로고(보행자 + 경고 링)를 중앙 배치한 시안입니다.
+  - 실제 스플래시는 최소 1242x2688(9:19.5 근처) 세로형 PNG 권장.
+  - app.json 스플래시 backgroundColor 는 #1a7f37 로 맞춥니다(resizeMode: contain 이면 여백이 이 색으로 채워짐).
+  - 이 SVG 는 시안이며, PNG 로 내보낸 뒤 app.json 에 연결하세요(절차: docs/app-assets.md).
+-->
+<svg xmlns="http://www.w3.org/2000/svg" width="1242" height="2688" viewBox="0 0 1242 2688">
+  <!-- 불투명 단색 배경 -->
+  <rect x="0" y="0" width="1242" height="2688" fill="#1a7f37"/>
+
+  <!-- 중앙 로고: 아이콘과 동일 모티프를 512 캔버스 기준으로 화면 중앙에 배치 -->
+  <!-- (621,1344) 를 중심으로 아이콘 512 좌표계를 대략 1.0x 로 배치 -->
+  <g transform="translate(365,1088)">
+    <!-- 경고 링 -->
+    <circle cx="256" cy="256" r="196" fill="none" stroke="#ffd21f" stroke-width="17"
+            stroke-linecap="round" stroke-dasharray="35 23"/>
+    <!-- 보행자 심볼 (아이콘과 동일, 0.5x 스케일) -->
+    <g fill="#ffffff" transform="scale(0.5)">
+      <circle cx="470" cy="300" r="66"/>
+      <path d="M452 372 L512 388 L556 470 L520 500 L486 452 L486 560 L452 560 Z"/>
+      <path d="M512 402 L620 430 L612 468 L500 448 Z"/>
+      <path d="M486 548 L540 560 L600 720 L556 742 L500 604 Z"/>
+      <path d="M452 548 L488 560 L430 726 L384 712 L432 596 Z"/>
+    </g>
+  </g>
+
+  <!-- 앱 이름 -->
+  <text x="621" y="1720" text-anchor="middle"
+        font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif"
+        font-size="88" font-weight="700" fill="#ffffff">보행안전 WSS</text>
+</svg>
