@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  시안 C — 모노톤 + 포인트컬러 (그래파이트 배경 + 코랄/앰버 포인트), 방패 + 펄스 도트 추상 심볼
+  앱 아이콘 (보행안전 WSS) — 1024x1024
+  - 불투명 배경(알파 없음 — App Store 요구). 둥근 모서리 미적용(시스템이 마스킹).
+  - 사람/보행자 심볼 없음. PNG 내보낼 때 알파 채널을 반드시 끄세요.
+  모티프: 방패(보호/안전) 외곽 + 중앙 포인트 도트 & 얇은 펄스 링(경고 지점).
+-->
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="bgC" x1="0" y1="0" x2="1024" y2="1024" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#23272e"/>
+      <stop offset="1" stop-color="#31363f"/>
+    </linearGradient>
+  </defs>
+
+  <!-- 불투명 배경 -->
+  <rect x="0" y="0" width="1024" height="1024" fill="url(#bgC)"/>
+
+  <!-- 방패 외곽 (얇은 스트로크, 모노톤) -->
+  <path d="M512 250
+           L724 328
+           L724 512
+           C724 636 632 726 512 776
+           C392 726 300 636 300 512
+           L300 328 Z"
+        fill="none" stroke="#8b93a1" stroke-width="26" stroke-linejoin="round"/>
+
+  <!-- 펄스 링 (포인트 컬러, 앰버) -->
+  <circle cx="512" cy="500" r="118" fill="none" stroke="#f0a13a" stroke-width="16" opacity="0.55"/>
+
+  <!-- 중앙 포인트 도트 (코랄) -->
+  <circle cx="512" cy="500" r="62" fill="#ff6f5e"/>
+</svg>

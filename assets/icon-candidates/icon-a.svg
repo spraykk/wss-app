@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  시안 A — 딥 네이비/인디고 + 미묘한 선형 그라데이션, 중앙 미니멀 위치 핀 + 펄스(동심원)
+  앱 아이콘 (보행안전 WSS) — 1024x1024
+  - 불투명 배경(알파 없음 — App Store 요구). 배경 그라데이션의 양 끝은 모두 불투명색.
+  - 둥근 모서리 미적용(시스템이 마스킹). 사람/보행자 심볼 없음.
+  - PNG 내보낼 때 알파 채널을 반드시 끄세요. 절차: assets/ICON_CANDIDATES.md / docs/app-assets.md.
+  모티프: 위치 핀(내가 걷는 지점) + 동심원 펄스(주변 안전 존 감지).
+-->
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="bgA" x1="0" y1="0" x2="1024" y2="1024" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#1e2a55"/>
+      <stop offset="1" stop-color="#2f3f7a"/>
+    </linearGradient>
+    <linearGradient id="pinA" x1="512" y1="300" x2="512" y2="720" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#8ea2ff"/>
+      <stop offset="1" stop-color="#5f79e8"/>
+    </linearGradient>
+  </defs>
+
+  <!-- 불투명 배경 -->
+  <rect x="0" y="0" width="1024" height="1024" fill="url(#bgA)"/>
+
+  <!-- 펄스 동심원 (은은한 링) -->
+  <circle cx="512" cy="470" r="300" fill="none" stroke="#8ea2ff" stroke-width="10" opacity="0.20"/>
+  <circle cx="512" cy="470" r="222" fill="none" stroke="#8ea2ff" stroke-width="12" opacity="0.32"/>
+
+  <!-- 위치 핀 (물방울 형태 + 중앙 구멍) -->
+  <path d="M512 264
+           C606 264 682 340 682 434
+           C682 546 566 660 512 736
+           C458 660 342 546 342 434
+           C342 340 418 264 512 264 Z"
+        fill="url(#pinA)"/>
+  <circle cx="512" cy="434" r="70" fill="#1e2a55"/>
+</svg>

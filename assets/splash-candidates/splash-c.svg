@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  스플래시 시안 C — 아이콘 시안 C(그래파이트 + 코랄/앰버 포인트, 방패 펄스)와 동일 톤.
+  보행안전 WSS — 세로형 1242x2688 권장.
+  - 불투명 배경(알파 없음). app.json backgroundColor 는 #23272e 로 맞추세요.
+  - PNG 내보낼 때 알파 끄기. 절차: assets/ICON_CANDIDATES.md / docs/app-assets.md.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" width="1242" height="2688" viewBox="0 0 1242 2688">
+  <defs>
+    <linearGradient id="sbgC" x1="0" y1="0" x2="1242" y2="2688" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#23272e"/>
+      <stop offset="1" stop-color="#31363f"/>
+    </linearGradient>
+  </defs>
+
+  <!-- 불투명 배경 -->
+  <rect x="0" y="0" width="1242" height="2688" fill="url(#sbgC)"/>
+
+  <!-- 중앙 로고 마크 (방패 + 펄스 + 포인트 도트) -->
+  <g transform="translate(621,1300)">
+    <path d="M0 -250
+             L212 -172
+             L212 12
+             C212 136 120 226 0 276
+             C-120 226 -212 136 -212 12
+             L-212 -172 Z"
+          fill="none" stroke="#8b93a1" stroke-width="26" stroke-linejoin="round"/>
+    <circle cx="0" cy="0" r="118" fill="none" stroke="#f0a13a" stroke-width="16" opacity="0.55"/>
+    <circle cx="0" cy="0" r="62" fill="#ff6f5e"/>
+  </g>
+
+  <!-- 앱 이름 -->
+  <text x="621" y="1760" text-anchor="middle"
+        font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif"
+        font-size="88" font-weight="700" fill="#eef1f5">보행안전 WSS</text>
+</svg>
