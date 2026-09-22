@@ -56,7 +56,7 @@ Pages 의 **Branch** 드롭다운에는 **원격(origin)에 push 된 브랜치�
 
 1. 게시된 URL 을 **App Store Connect → 앱 정보 → 개인정보 처리방침 URL** 에 입력.
 2. `docs/store-listing.md` 의 "개인정보 처리방침 URL" 항목을 실제 URL 로 교체.
-3. `docs/privacy-policy.html` / `docs/privacy-policy.md` 의 **담당자 이메일 자리(placeholder)** 를 실제 연락처로 채운 뒤 다시 커밋/push.
+3. `docs/privacy-policy.html` / `docs/privacy-policy.md` 의 담당자 이메일은 `spraykk@snu.ac.kr` 로 기입되어 있습니다. 변경이 필요하면 두 파일을 함께 수정한 뒤 다시 커밋/push.
 
 ---
 
