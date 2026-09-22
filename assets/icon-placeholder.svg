@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  플레이스홀더 앱 아이콘 (보행안전 WSS)
+  제출 전 실제 디자인 아이콘으로 교체해야 합니다. App Store 는 1024x1024 PNG(알파 없음)를 요구합니다.
+  이 SVG 는 임시 시안이며, 1024x1024 캔버스로 PNG 내보내기(export) 후 app.json 의 icon 경로에 연결하세요.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <rect width="1024" height="1024" rx="220" fill="#1a7f37"/>
+  <!-- 보행자 심볼 (걷는 사람) -->
+  <g fill="#ffffff">
+    <circle cx="560" cy="250" r="72"/>
+    <path d="M300 470 L470 400 L560 430 L560 520 L500 500 L440 720 L360 700 L410 520 L360 540 Z"/>
+    <path d="M560 430 L640 470 L720 640 L650 690 L580 540 Z"/>
+    <path d="M470 720 L500 760 L420 900 L360 880 Z"/>
+  </g>
+  <!-- 경고 링 (위험구역 경고를 상징) -->
+  <circle cx="512" cy="512" r="440" fill="none" stroke="#ffd21f" stroke-width="28" stroke-dasharray="60 40"/>
+</svg>

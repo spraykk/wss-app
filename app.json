@@ -5,8 +5,9 @@
     "ios": {
       "supportsTablet": true, "bundleIdentifier": "com.wssapp.walkingsafety",
       "infoPlist": {
-        "NSLocationWhenInUseUsageDescription": "보행 중 위험지역 진입을 감지해 실시간으로 알려드리기 위해 위치 정보가 필요합니다.",
-        "NSMotionUsageDescription": "보행 여부를 감지하기 위해 걸음 수 센서를 사용합니다.",
+        "NSLocationWhenInUseUsageDescription": "보행 중 사고다발구역 진입을 감지해 실시간으로 경고하기 위해 위치 정보를 사용합니다. 위치는 경고 목적에만 쓰이며 기기 밖으로 전송하지 않습니다.",
+        "NSLocationAlwaysAndWhenInUseUsageDescription": "화면이 꺼져 있거나 앱이 백그라운드에 있을 때도 사고다발구역 진입을 감지해 경고하기 위해 '항상' 위치 접근이 필요합니다. 백그라운드 위치는 오직 사고다발구역 진입 감지·경고에만 사용하며, 위치 데이터를 수집·판매·외부 전송하지 않습니다.",
+        "NSMotionUsageDescription": "보행 중인지 판단해 정지 상태에서 불필요한 경고를 줄이기 위해 걸음 수·동작 센서를 사용합니다.",
         "UIBackgroundModes": ["location"]
       }
     },
