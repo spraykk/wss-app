@@ -14,12 +14,18 @@ import * as Location from 'expo-location';
 import type { WalkSegment, WeatherCondition, TimeBand } from '../types';
 import { buildSegmentKey } from './segmentKey';
 import { getCurrentTimeBand } from '../wss/context';
+import { useAudioEnvironment } from '../sensors/useAudioEnvironment';
+import { isEarEffectivelyOccluded } from '../sensors/audioState';
 
 export interface WalkContextSample {
   zoneId: string;
   riskIntensity: number;
   weather: WeatherCondition;
-  isEarOccluded: boolean;
+  // FEAT-002: 차음 여부의 소스가 수동 토글 -> 자동 감지 오디오 상태로 바뀌었다.
+  // 상위 샘플 파이프라인이 값을 넘기지 않으면(생략하면) useAudioEnvironment() 로
+  // 자동 감지한 오디오 환경에서 isEarEffectivelyOccluded 로 파생해 채운다.
+  // 수동 토글은 제공하지 않는다.
+  isEarOccluded?: boolean;
   smartphoneUseMinutes: number;
   walkMinutes: number;
   timeBand?: TimeBand;
@@ -41,14 +47,23 @@ export function useWalkSession(): UseWalkSession {
   // 현재 진행 중인 세그먼트의 키(과분할 방지를 위한 안정화된 키).
   const currentKeyRef = useRef<string | null>(null);
 
+  // FEAT-002: 자동 감지 오디오 환경. 이 값이 차음(isEarOccluded)의 소스다(수동 토글 없음).
+  const audioEnv = useAudioEnvironment();
+  const audioEarOccluded = isEarEffectivelyOccluded(audioEnv);
+  // 인터벌/콜백 클로저가 stale 값을 읽지 않도록 최신 감지값을 ref 로도 보관한다.
+  const audioEarOccludedRef = useRef<boolean>(audioEarOccluded);
+  audioEarOccludedRef.current = audioEarOccluded;
+
   const ingestSample = useCallback((sample: WalkContextSample): void => {
     const timeBand = sample.timeBand ?? getCurrentTimeBand();
+    // 차음 여부는 샘플이 명시하지 않으면 자동 감지 오디오 상태에서 파생한다.
+    const isEarOccluded = sample.isEarOccluded ?? audioEarOccludedRef.current;
     const key = buildSegmentKey({
       zoneId: sample.zoneId,
       riskIntensity: sample.riskIntensity,
       weather: sample.weather,
       timeBand,
-      isEarOccluded: sample.isEarOccluded,
+      isEarOccluded,
     });
 
     setSegments((prev) => {
@@ -71,7 +86,7 @@ export function useWalkSession(): UseWalkSession {
         riskIntensity: sample.riskIntensity,
         weather: sample.weather,
         timeBand,
-        isEarOccluded: sample.isEarOccluded,
+        isEarOccluded,
       };
       return [...prev, segment];
     });

@@ -20,7 +20,10 @@ export interface WalkSegment {
   riskIntensity: number;
   weather: WeatherCondition;
   timeBand: TimeBand;
-  /** 이어폰/귀마개 등 차음 환경 여부 */
+  /** 이어폰/귀마개 등 차음 환경 여부.
+   * FEAT-002: 필드명은 유지하되 소스가 수동 입력 -> 자동 감지 오디오 상태로 바뀌었다.
+   * 값은 isEarEffectivelyOccluded({bluetoothAudioRouteConnected, otherAudioPlaying})
+   * = (둘 다 true) 에서 채워진다. EAR_WEIGHT(occluded=1.5/open=1.0) 매핑은 불변. */
   isEarOccluded: boolean;
 }
 

@@ -5,11 +5,20 @@ import { StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { Link } from 'expo-router';
 import { useWalkSession } from '../src/hooks/useWalkSession';
 import { computeWSS } from '../src/wss/engine';
+import { useAudioEnvironment } from '../src/sensors/useAudioEnvironment';
+import { isEarEffectivelyOccluded } from '../src/sensors/audioState';
 
 export default function HomeScreen() {
   const { segments, isTracking, start, stop } = useWalkSession();
 
   const wss = useMemo(() => computeWSS(segments), [segments]);
+
+  // FEAT-002: 자동 감지된 오디오 상태를 읽기 전용으로만 표시(수동 컨트롤 없음).
+  const audioEnv = useAudioEnvironment();
+  const earOccluded = isEarEffectivelyOccluded(audioEnv);
+  const audioStatusText = earOccluded
+    ? '이어폰(블루투스)+재생 감지됨 · 청각 주의'
+    : '이어폰 재생 미감지 · 주변음 인지 가능';
 
   return (
     <View style={styles.container}>
@@ -18,6 +27,8 @@ export default function HomeScreen() {
       <Text style={styles.sub}>
         {wss.belowCriticalThreshold ? '주의: 위험 수준입니다' : '안전하게 걷고 있어요'}
       </Text>
+
+      <Text style={styles.audioStatus}>{audioStatusText}</Text>
 
       <TouchableOpacity
         style={[styles.button, isTracking ? styles.stop : styles.start]}
@@ -42,7 +53,8 @@ const styles = StyleSheet.create({
   container: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: 24, gap: 12 },
   scoreLabel: { fontSize: 16, color: '#555' },
   score: { fontSize: 72, fontWeight: '800' },
-  sub: { fontSize: 14, color: '#777', marginBottom: 24 },
+  sub: { fontSize: 14, color: '#777', marginBottom: 8 },
+  audioStatus: { fontSize: 13, color: '#8a6d3b', marginBottom: 24 },
   button: { paddingVertical: 14, paddingHorizontal: 40, borderRadius: 999 },
   start: { backgroundColor: '#1a7f37' },
   stop: { backgroundColor: '#b42318' },
