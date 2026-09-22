@@ -1,6 +1,7 @@
 {
   "expo": {
     "name": "보행안전 WSS", "slug": "wss-app", "version": "1.0.0", "orientation": "portrait",
+    "icon": "./assets/icon.png",
     "userInterfaceStyle": "light", "scheme": "wssapp", "newArchEnabled": true,
     "ios": {
       "supportsTablet": true, "bundleIdentifier": "com.wssapp.walkingsafety",
@@ -13,6 +14,7 @@
     },
     "android": {
       "package": "com.wssapp.walkingsafety",
+      "adaptiveIcon": { "foregroundImage": "./assets/icon.png", "backgroundColor": "#0f3b45" },
       "predictiveBackGestureEnabled": false,
       "permissions": ["ACCESS_FINE_LOCATION", "ACCESS_COARSE_LOCATION", "ACCESS_BACKGROUND_LOCATION", "ACTIVITY_RECOGNITION"]
     },
