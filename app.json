@@ -1,24 +1,63 @@
 {
   "expo": {
-    "name": "보행안전 WSS", "slug": "wss-app", "version": "1.0.0", "orientation": "portrait",
+    "name": "보행안전 WSS",
+    "slug": "wss-app",
+    "version": "1.0.0",
+    "orientation": "portrait",
     "icon": "./assets/icon.png",
-    "userInterfaceStyle": "light", "scheme": "wssapp", "newArchEnabled": true,
+    "userInterfaceStyle": "light",
+    "scheme": "wssapp",
+    "newArchEnabled": true,
     "ios": {
-      "supportsTablet": true, "bundleIdentifier": "com.wssapp.walkingsafety",
+      "supportsTablet": true,
+      "bundleIdentifier": "com.wssapp.walkingsafety",
       "infoPlist": {
         "NSLocationWhenInUseUsageDescription": "보행 중 사고다발구역 진입을 감지해 실시간으로 경고하기 위해 위치 정보를 사용합니다. 위치는 경고 목적에만 쓰이며 기기 밖으로 전송하지 않습니다.",
         "NSLocationAlwaysAndWhenInUseUsageDescription": "화면이 꺼져 있거나 앱이 백그라운드에 있을 때도 사고다발구역 진입을 감지해 경고하기 위해 '항상' 위치 접근이 필요합니다. 백그라운드 위치는 오직 사고다발구역 진입 감지·경고에만 사용하며, 위치 데이터를 수집·판매·외부 전송하지 않습니다.",
         "NSMotionUsageDescription": "보행 중인지 판단해 정지 상태에서 불필요한 경고를 줄이기 위해 걸음 수·동작 센서를 사용합니다.",
-        "UIBackgroundModes": ["location"]
+        "UIBackgroundModes": [
+          "location",
+          "location",
+          "location"
+        ],
+        "ITSAppUsesNonExemptEncryption": false
       }
     },
     "android": {
       "package": "com.wssapp.walkingsafety",
-      "adaptiveIcon": { "foregroundImage": "./assets/icon.png", "backgroundColor": "#0f3b45" },
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/icon.png",
+        "backgroundColor": "#0f3b45"
+      },
       "predictiveBackGestureEnabled": false,
-      "permissions": ["ACCESS_FINE_LOCATION", "ACCESS_COARSE_LOCATION", "ACCESS_BACKGROUND_LOCATION", "ACTIVITY_RECOGNITION"]
+      "permissions": [
+        "ACCESS_FINE_LOCATION",
+        "ACCESS_COARSE_LOCATION",
+        "ACCESS_BACKGROUND_LOCATION",
+        "ACTIVITY_RECOGNITION",
+        "ACCESS_FINE_LOCATION",
+        "ACCESS_COARSE_LOCATION",
+        "ACCESS_BACKGROUND_LOCATION",
+        "ACTIVITY_RECOGNITION"
+      ]
     },
     "web": {},
-    "plugins": ["expo-router", "expo-notifications", "./plugins/withAudioEnvironment"]
+    "plugins": [
+      "expo-router",
+      "expo-notifications",
+      "./plugins/withAudioEnvironment"
+    ],
+    "extra": {
+      "router": {},
+      "eas": {
+        "projectId": "2a684753-bd4e-453c-bda7-06287de7e7ac"
+      }
+    },
+    "runtimeVersion": {
+      "policy": "appVersion"
+    },
+    "updates": {
+      "url": "https://u.expo.dev/2a684753-bd4e-453c-bda7-06287de7e7ac"
+    }
   }
 }
