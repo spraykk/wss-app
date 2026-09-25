@@ -42,6 +42,16 @@ import {
   dismissTrackingNotification,
 } from '../notifications/alerts';
 import { saveResult } from '../storage/history';
+import { getOrCreateDeviceId } from '../storage/deviceId';
+import { uploadScore } from '../data/supabase';
+
+// 로컬 날짜를 yyyy-mm-dd 로 만든다(시각/타임존은 서버에 보내지 않는다).
+function toDateISO(date: Date): string {
+  const y = date.getFullYear();
+  const m = `${date.getMonth() + 1}`.padStart(2, '0');
+  const d = `${date.getDate()}`.padStart(2, '0');
+  return `${y}-${m}-${d}`;
+}
 
 // WalkContextSample 계약은 순수 리듀서 모듈에 단일 소스로 둔다(중복 정의 제거).
 export type { WalkContextSample } from '../session/sessionReducer';
@@ -149,6 +159,20 @@ export function useWalkSession(): UseWalkSession {
     if (finalSession.segments.length > 0) {
       const result = computeWSS(finalSession.segments);
       await saveResult(result);
+
+      // 익명 통계 서버로 최소 데이터만 업로드한다: displayScore(0~100), 날짜, 익명 deviceId.
+      // 위치·경로·rawScore 등은 전송하지 않는다. 미설정/실패 시 no-op 이며 세션 종료·
+      // 로컬 저장을 절대 깨뜨리지 않도록 try/catch 로 감싼다(로컬 저장이 항상 우선).
+      try {
+        const deviceId = await getOrCreateDeviceId();
+        await uploadScore({
+          deviceId,
+          displayScore: result.displayScore,
+          dateISO: toDateISO(new Date()),
+        });
+      } catch {
+        // 업로드 실패는 조용히 무시한다(부가기능).
+      }
     }
 
     // 진행 중 세션 파기.
