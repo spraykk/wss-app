@@ -27,13 +27,19 @@ function assertClose(label: string, actual: number, expected: number): void {
   }
 }
 
-// 1) 기준 사고다발지역(3년 5건) 심각도 = 1.0
+// 회귀 오라클 갱신 안내:
+//   옛 임의 가중치 기반 기대값(결합 8.2875 / rawScore 91.7125 / 위치 2.5)에서,
+//   전국 교통사고 통계 EPDO 실증값으로 재조정한 새 가중치 기준으로 갱신했다.
+//   (시간 rush_am 0.97, 날씨 rain_or_snow 1.06, 위치 highRisk 1.5, 이어폰 1.3)
+//   기대값은 하드코딩하지 않고 실증 가중치로 코드에서 재계산한다.
+
+// 1) 기준 사고다발지역(3년 5건) 심각도 = 1.0 (로직 불변)
 assertClose('computeZoneSeverity(5) === 1.0', computeZoneSeverity(5), 1.0);
 
-// 2) 위험강도 1.0 -> 위치 가중치 2.5
-assertClose('computeLocationWeight(1.0) === 2.5', computeLocationWeight(1.0), 2.5);
+// 2) 위험강도 1.0 -> 위치 가중치 1.5 (highRisk 재조정: 2.5 -> 1.5)
+assertClose('computeLocationWeight(1.0) === 1.5', computeLocationWeight(1.0), 1.5);
 
-// 3) 기준 세그먼트 결합 가중치 = 2.5 * 1.7 * 1.3 * 1.5 = 8.2875
+// 3) 기준 세그먼트 결합 가중치 = 1.5(위치) * 1.06(비/눈) * 0.97(오전러시) * 1.3(이어폰)
 const referenceSegment = {
   regionId: 'ref',
   smartphoneUseMinutes: 1,
@@ -43,10 +49,11 @@ const referenceSegment = {
   timeBand: 'rush_am' as const,
   isEarOccluded: true,
 };
-assertClose('reference combined weight === 8.2875', computeSegmentWeight(referenceSegment).combined, 8.2875);
+const expectedCombined = 1.5 * 1.06 * 0.97 * 1.3; // 새 실증 오라클(코드 계산)
+assertClose('reference combined weight', computeSegmentWeight(referenceSegment).combined, expectedCombined);
 
-// 4) 위 세그먼트를 1분 사용 -> rawScore = 100 - 8.2875 = 91.7125
-assertClose('computeWSS rawScore === 91.7125', computeWSS([referenceSegment]).rawScore, 91.7125);
+// 4) 위 세그먼트를 1분 사용 -> rawScore = 100 - combined
+assertClose('computeWSS rawScore', computeWSS([referenceSegment]).rawScore, 100 - expectedCombined);
 
 if (failures > 0) {
   console.log(`\n${failures} assertion(s) FAILED`);

@@ -198,7 +198,8 @@ export function haversineMeters(
 //
 // 보정(calibration) 안전성: 임계값 내 이웃이 없는 고립 zone 은 단일 구성원
 // 연결 요소가 되어 그대로 통과한다(합계 = 자기 자신의 count). 따라서 count 5
-// 기준 참조 지점은 불변 -> computeZoneSeverity(5)=1.0 -> computeLocationWeight(1.0)=2.5 유지.
+// 기준 참조 지점은 불변 -> computeZoneSeverity(5)=1.0 -> computeLocationWeight(1.0)=highRisk 유지
+// (실증 재조정 후 highRisk=1.5).
 // (count 5 를 특수 처리하지 않는다. 일반 알고리즘이 자연히 고립 지점을 보존한다.)
 export function mergeNearbyZones(
   zones: AccidentZone[],

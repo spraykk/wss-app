@@ -2,7 +2,8 @@
 // 원 보고서: "보행중 스마트폰 사용 억제를 통한 보행 안전 확보:
 //            로지스틱 회귀모형을 통한 보행안전점수(WSS) 설계 및 이를 활용한 넛지"
 
-export type WeatherCondition = 'clear' | 'rain_or_snow' | 'other_not_clear';
+// 'fog'(안개)는 건당 EPDO 심각도가 가장 높은 기상상태(사망률 약 92‰)라 별도 분류.
+export type WeatherCondition = 'clear' | 'rain_or_snow' | 'other_not_clear' | 'fog';
 
 export type TimeBand = 'rush_am' | 'rush_pm' | 'normal_day' | 'normal_night';
 
@@ -23,7 +24,7 @@ export interface WalkSegment {
   /** 이어폰/귀마개 등 차음 환경 여부.
    * FEAT-002: 필드명은 유지하되 소스가 수동 입력 -> 자동 감지 오디오 상태로 바뀌었다.
    * 값은 isEarEffectivelyOccluded({bluetoothAudioRouteConnected, otherAudioPlaying})
-   * = (둘 다 true) 에서 채워진다. EAR_WEIGHT(occluded=1.5/open=1.0) 매핑은 불변. */
+   * = (둘 다 true) 에서 채워진다. EAR_WEIGHT(occluded=1.3/open=1.0) 매핑에 연결된다. */
   isEarOccluded: boolean;
 }
 

@@ -65,6 +65,12 @@ export function nearestUltraSrtNcstBase(now: Date = new Date()): NcstBase {
 
 // KMA 초단기실황 카테고리(PTY: 강수형태) -> 앱 WeatherCondition 매핑.
 // PTY: 0 없음, 1 비, 2 비/눈, 3 눈, 4 소나기, 5 빗방울, 6 빗방울눈날림, 7 눈날림
+//
+// 안개('fog') 자동감지 한계: KMA 초단기실황(getUltraSrtNcst)은 PTY/SKY 만 제공하고
+// 시정(visibility)/안개 전용 카테고리가 없어, 이 응답만으로 안개를 신뢰성 있게
+// 판별할 수 없다. 따라서 여기서는 기존 강수/하늘 분류를 유지한다. 별도 시정 관측
+// (예: getWthrDataList 의 VS)이나 사용자 입력으로 안개가 확인되면 mapKmaToWeatherCondition
+// 대신 'fog' 를 직접 세그먼트 weather 로 지정하면 WEATHER_WEIGHT.fog(1.62)가 적용된다.
 export function mapKmaToWeatherCondition(pty: number, sky?: number): WeatherCondition {
   if (pty === 1 || pty === 2 || pty === 3 || pty === 4 || pty === 5 || pty === 6 || pty === 7) {
     return 'rain_or_snow';

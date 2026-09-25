@@ -25,7 +25,7 @@ register('./ts-transpile-hook.mjs', import.meta.url);
 // 이렇게 해서 node:* 의존은 scripts/ 안에만 남고 src/ 에는 0건이 된다.
 const { mergeNearbyZones, postProcessZones, haversineMeters } =
   await import('../src/data/accidentZones.ts');
-const { computeRiskIntensity, computeZoneSeverity, computeLocationWeight } =
+const { computeRiskIntensity, computeZoneSeverity, computeLocationWeight, LOCATION_WEIGHT } =
   await import('../src/wss/weights.ts');
 
 interface AccidentZoneRow {
@@ -172,10 +172,12 @@ if (loneMerged) {
     computeZoneSeverity(loneMerged.accidentCount3y),
     1.0
   );
+  // 실증 재조정으로 highRisk 가 2.5 -> 1.5 로 바뀌었다. 보정 안전성의 핵심은
+  // "count-5 기준점이 riskIntensity=1.0 을 유지해 highRisk 값을 그대로 산출"하는 것.
   assertClose(
-    'computeLocationWeight(severity(5)) === 2.5',
+    'computeLocationWeight(severity(5)) === LOCATION_WEIGHT.highRisk',
     computeLocationWeight(computeZoneSeverity(loneMerged.accidentCount3y)),
-    2.5
+    LOCATION_WEIGHT.highRisk
   );
 }
 

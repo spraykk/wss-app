@@ -43,6 +43,18 @@ export default function ReportScreen() {
           <Text style={styles.muted}>raw {h.rawScore.toFixed(1)}</Text>
         </View>
       ))}
+
+      <View style={styles.disclaimerBox}>
+        <Text style={styles.disclaimer}>
+          WSS는 알려진 위험 요인(위치·날씨·시간대·청각·스마트폰 사용)을 종합한 참고
+          지표입니다. 시간대·날씨 가중치는 전국 교통사고 통계에 근거하며, 그 외 요인은
+          설계자가 설정한 값으로 실제 사고 발생을 예측하지 않습니다.
+        </Text>
+        <Text style={styles.disclaimer}>
+          기준선(WSS 80.605)은 위험을 단정하는 임계가 아니라 참고 기준선입니다. 상위
+          30% 등 상대 순위 지표는 서버 연동 후 제공될 예정입니다.
+        </Text>
+      </View>
     </ScrollView>
   );
 }
@@ -57,4 +69,6 @@ const styles = StyleSheet.create({
   empty: { fontSize: 15, color: '#777', textAlign: 'center', marginTop: 40 },
   historyRow: { flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 6 },
   muted: { color: '#888' },
+  disclaimerBox: { marginTop: 24, padding: 12, borderRadius: 10, backgroundColor: '#eef1f4', gap: 8 },
+  disclaimer: { fontSize: 12, color: '#666', lineHeight: 18 },
 });
