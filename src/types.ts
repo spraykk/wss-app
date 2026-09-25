@@ -49,6 +49,11 @@ export interface WSSResult {
   /** WSS_critical 미만 여부 (보고서 임계점 60 기준, 알림/위험표시 등 트리거) */
   belowCriticalThreshold: boolean;
   segmentBreakdown: Array<{ regionId: string; weight: WeightBreakdown; contribution: number }>;
+  /** 보행이 끝난 로컬 날짜(yyyy-mm-dd). 저장 시점(stop)에 toDateISO(new Date())로 채운다
+   * (업로드에 쓰는 date_iso 와 동일 값). 주간 일별 막대그래프 집계용.
+   * 선택 필드(옵셔널)로 두어 이 필드가 없던 과거 이력 행과 하위호환된다(없으면 집계에서 제외).
+   * 기존 필드는 무엇도 제거/개명하지 않는다(engine.ts/report.tsx/검증스크립트 의존). */
+  dateISO?: string;
 }
 
 export interface AccidentZone {

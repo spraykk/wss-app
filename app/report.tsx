@@ -4,13 +4,34 @@ import { useEffect, useState } from 'react';
 import { ScrollView, StyleSheet, Text, View } from 'react-native';
 import { Link } from 'expo-router';
 import { loadHistory } from '../src/storage/history';
-import { fetchStats } from '../src/data/supabase';
+import { fetchStats, fetchStatsByAge } from '../src/data/supabase';
 import type { WssStats } from '../src/data/supabase';
+import { getAgeBand, AGE_BAND_OPTIONS } from '../src/storage/ageBand';
+import type { AgeBand } from '../src/storage/ageBand';
 import type { WSSResult } from '../src/types';
+import { computeWeeklyDaily } from '../src/wss/weekly';
+import type { WeeklyDay } from '../src/wss/weekly';
 import { palette, spacing, radius, font, shadow } from '../src/theme';
 import { classifyGrade } from '../src/wss/grade';
 import type { WssGrade } from '../src/wss/grade';
 import { WSS_CRITICAL } from '../src/wss/weights';
+
+// 로컬 오늘 날짜를 yyyy-mm-dd 로 만든다(useWalkSession.toDateISO 와 동일 규칙).
+// node:* 없이 순수 Date 산술만 사용한다.
+function toDateISO(date: Date): string {
+  const y = date.getFullYear();
+  const m = `${date.getMonth() + 1}`.padStart(2, '0');
+  const d = `${date.getDate()}`.padStart(2, '0');
+  return `${y}-${m}-${d}`;
+}
+
+// yyyy-mm-dd 에서 "일(day-of-month)"만 뽑아 짧은 막대 라벨로 쓴다(locale 라이브러리 불필요).
+function dayLabelFromISO(iso: string): string {
+  if (typeof iso !== 'string') return '';
+  const m = /^\d{4}-\d{2}-(\d{2})$/.exec(iso);
+  if (!m) return '';
+  return String(Number(m[1])); // 앞자리 0 제거(예: '09' -> '9')
+}
 
 // 통계 표시에 필요한 최소 표본 수. 이보다 적으면(또는 미설정/오류면) 가짜 숫자를
 // 보여주지 않고 "아직 데이터가 부족합니다"로 정직하게 표시한다.
@@ -58,22 +79,50 @@ const GRADE_ICON: Record<WssGrade, string> = {
   insufficient: '⏳',
 };
 
-export default function ReportScreen() {
-  const [history, setHistory] = useState<WSSResult[]>([]);
-  const [stats, setStats] = useState<WssStats | null>(null);
-
-  useEffect(() => {
-    void loadHistory().then(setHistory);
-    // 서버 통계 조회. 미설정/오류/표본부족이면 null 이 오며 아래에서 정직하게 처리한다.
-    void fetchStats().then(setStats);
-  }, []);
-
-  const latest = history[0];
-  const hasEnoughStats =
+// 통계 충분 여부 게이팅(전체/그룹에 동일하게, 그러나 각각 독립적으로 적용).
+// scripts/verify-agegroup-stats.ts 가 이 술어를 재현해 독립 게이팅을 검증한다.
+function hasEnoughStats(stats: WssStats | null): boolean {
+  return (
     stats !== null &&
     stats.sampleCount >= MIN_STATS_SAMPLE &&
     stats.meanScore !== null &&
-    stats.q3Score !== null;
+    stats.q3Score !== null
+  );
+}
+
+export default function ReportScreen() {
+  const [history, setHistory] = useState<WSSResult[]>([]);
+  const [stats, setStats] = useState<WssStats | null>(null);
+  const [ageBand, setAgeBandState] = useState<AgeBand | null>(null);
+  const [groupStats, setGroupStats] = useState<WssStats | null>(null);
+
+  useEffect(() => {
+    void loadHistory().then(setHistory);
+    // 전체 사용자 통계 조회. 미설정/오류/표본부족이면 null 이 오며 아래에서 정직하게 처리한다.
+    void fetchStats().then(setStats);
+    // 온보딩에서 1회 선택한 연령대 밴드를 읽고, 있으면 그룹 통계도 조회한다.
+    // 밴드 미선택이면 그룹 통계는 조회하지 않고 '측정 중'/안내로 정직하게 표시한다.
+    void getAgeBand().then((band) => {
+      setAgeBandState(band);
+      if (band !== null) {
+        void fetchStatsByAge(band).then(setGroupStats);
+      }
+    });
+  }, []);
+
+  const latest = history[0];
+  // 전체와 그룹을 각각 독립적으로 게이팅한다(한쪽이 충분해도 다른 쪽은 부족할 수 있다).
+  const overallEnough = hasEnoughStats(stats);
+  const groupEnough = hasEnoughStats(groupStats);
+  // 선택한 밴드의 한글 라벨(예: '10대'). 미선택이면 null.
+  const bandLabel =
+    ageBand !== null
+      ? (AGE_BAND_OPTIONS.find((o) => o.key === ageBand)?.label ?? null)
+      : null;
+
+  // 최근 7일 일별 대표 점수(순수 함수). 로컬 오늘 기준으로 집계한다.
+  const weekly: WeeklyDay[] = computeWeeklyDaily(history, toDateISO(new Date()));
+  const weeklyHasAny = weekly.some((d) => d.score !== null);
 
   // 등급 분류(순수 함수). displayScore 기준으로 절대기준(60 미만=위험) 우선 판정하고,
   // 표본이 5명 미만/미집계면 'insufficient'(측정 중)로 정직하게 폴백한다.
@@ -137,8 +186,23 @@ export default function ReportScreen() {
       )}
 
       <View style={styles.card}>
+        <Text style={styles.title}>주간 일별 점수</Text>
+        <Text style={styles.muted}>최근 7일, 하루의 마지막 보행 점수 기준</Text>
+        <WeeklyChart days={weekly} />
+        {!weeklyHasAny ? (
+          <Text style={styles.muted}>
+            아직 이번 주 보행 기록이 없어요. 보행을 완료하면 그날의 마지막 점수가 막대로
+            쌓여요.
+          </Text>
+        ) : null}
+      </View>
+
+      <View style={styles.card}>
         <Text style={styles.title}>다른 사용자와 비교</Text>
-        {hasEnoughStats && stats ? (
+
+        {/* (1) 전체 사용자 통계 — MIN_STATS_SAMPLE=5 로 독립 게이팅 */}
+        <Text style={styles.groupHeading}>전체 사용자</Text>
+        {overallEnough && stats ? (
           <>
             <ComparisonBar
               label="전체 사용자 평균"
@@ -173,9 +237,47 @@ export default function ReportScreen() {
           </>
         ) : (
           <Text style={styles.muted}>
-            다른 사용자 데이터가 아직 부족합니다
+            측정 중이에요. 다른 사용자 데이터가 아직 부족합니다
             {stats ? ` (${stats.sampleCount}명)` : ''}. 참여자가 늘어나면 평균과 상위
             25% 기준을 보여드릴게요.
+          </Text>
+        )}
+
+        {/* (2) 내 연령대 그룹 통계 — 전체와 독립적으로 게이팅 */}
+        <Text style={[styles.groupHeading, styles.groupHeadingSpaced]}>
+          {bandLabel ? `${bandLabel} 그룹` : '내 연령대 그룹'}
+        </Text>
+        {ageBand === null ? (
+          <Text style={styles.muted}>
+            온보딩에서 연령대를 선택하면 같은 또래(연령대) 그룹과도 비교해 드려요. 지금은
+            연령대 미선택('미상')이라 그룹 비교를 표시하지 않아요.
+          </Text>
+        ) : groupEnough && groupStats ? (
+          <>
+            <ComparisonBar
+              label={`${bandLabel ?? '내 연령대'} 평균`}
+              value={Math.round(groupStats.meanScore as number)}
+              tone="sky"
+            />
+            <ComparisonBar
+              label={`${bandLabel ?? '내 연령대'} 상위 25%(Q3)`}
+              value={Math.round(groupStats.q3Score as number)}
+              tone="yellow"
+            />
+            {latest ? (
+              <ComparisonBar
+                label="내 최근 점수"
+                value={Math.round(latest.displayScore)}
+                tone="pink"
+              />
+            ) : null}
+            <Text style={styles.muted}>{bandLabel} 그룹 표본 {groupStats.sampleCount}명 기준</Text>
+          </>
+        ) : (
+          <Text style={styles.muted}>
+            측정 중이에요. {bandLabel ? `${bandLabel} ` : ''}그룹 데이터가 아직 부족합니다
+            {groupStats ? ` (${groupStats.sampleCount}명)` : ''}. 같은 또래가 늘어나면
+            그룹 평균과 상위 25% 기준을 보여드릴게요.
           </Text>
         )}
       </View>
@@ -234,6 +336,35 @@ function ComparisonBar(props: { label: string; value: number; tone: 'sky' | 'pin
   );
 }
 
+// 주간 일별 대표 점수를 세로 막대 7개로 시각화한다. 순수 표시용(계산은 computeWeeklyDaily).
+// 새 패키지 없이 RN View 만으로 그린다: 각 칸은 고정 높이 트랙 안에서 score/100 비율만큼
+// 막대를 채운다. score=null(보행 없는 날)은 빈/플레이스홀더 막대 + 흐린 라벨로 표시한다.
+function WeeklyChart(props: { days: WeeklyDay[] }) {
+  return (
+    <View style={styles.weekRow}>
+      {props.days.map((d, i) => {
+        const hasScore = d.score !== null;
+        const clamped = hasScore ? Math.max(0, Math.min(100, d.score as number)) : 0;
+        return (
+          <View key={`${d.dateISO}-${i}`} style={styles.weekCol}>
+            <Text style={styles.weekScore}>{hasScore ? Math.round(d.score as number) : '-'}</Text>
+            <View style={styles.weekTrack}>
+              {hasScore ? (
+                <View style={[styles.weekFill, { height: `${clamped}%` }]} />
+              ) : (
+                <View style={styles.weekEmpty} />
+              )}
+            </View>
+            <Text style={[styles.weekDay, hasScore ? null : styles.weekDayMuted]}>
+              {dayLabelFromISO(d.dateISO)}
+            </Text>
+          </View>
+        );
+      })}
+    </View>
+  );
+}
+
 const styles = StyleSheet.create({
   screen: { backgroundColor: palette.bg },
   container: { padding: spacing.xl, gap: spacing.md },
@@ -281,6 +412,29 @@ const styles = StyleSheet.create({
     overflow: 'hidden',
   },
   barFill: { height: 12, borderRadius: radius.pill },
+  groupHeading: { fontSize: font.body, fontWeight: '800', color: palette.text, marginTop: spacing.xs },
+  groupHeadingSpaced: { marginTop: spacing.lg },
+  weekRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-end',
+    justifyContent: 'space-between',
+    marginTop: spacing.sm,
+    gap: spacing.xs,
+  },
+  weekCol: { flex: 1, alignItems: 'center', gap: spacing.xs },
+  weekScore: { fontSize: font.caption, color: palette.textMuted, fontWeight: '700' },
+  weekTrack: {
+    width: '100%',
+    height: 96,
+    borderRadius: radius.sm,
+    backgroundColor: palette.surfaceAlt,
+    overflow: 'hidden',
+    justifyContent: 'flex-end',
+  },
+  weekFill: { width: '100%', borderRadius: radius.sm, backgroundColor: palette.skyDeep },
+  weekEmpty: { width: '100%', height: 4, backgroundColor: palette.border },
+  weekDay: { fontSize: font.caption, color: palette.textMuted, fontWeight: '700' },
+  weekDayMuted: { color: palette.textFaint, fontWeight: '400' },
   feedbackLink: {
     marginTop: spacing.md,
     paddingVertical: spacing.lg,

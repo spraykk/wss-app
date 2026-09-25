@@ -158,7 +158,11 @@ export function useWalkSession(): UseWalkSession {
     // 최종 세션을 읽어 WSS 결과를 history 에 저장(로컬 저장은 항상 우선이므로 await).
     const finalSession = await loadActiveSession();
     if (finalSession.segments.length > 0) {
-      const result = computeWSS(finalSession.segments);
+      const computed = computeWSS(finalSession.segments);
+      // 보행이 끝난 로컬 날짜를 결과에 도장 찍는다(업로드 date_iso 와 동일 값).
+      // 주간 일별 막대그래프가 이 날짜로 하루별 대표 점수를 집계한다.
+      const dateISO = toDateISO(new Date());
+      const result = { ...computed, dateISO };
       await saveResult(result);
 
       // 익명 통계 서버로 최소 데이터만 업로드한다: displayScore(0~100), 날짜, 익명 deviceId.
@@ -170,7 +174,6 @@ export function useWalkSession(): UseWalkSession {
       // 이제 deviceId 취득 + 업로드를 백그라운드로 던지고(void) stop 은 이를 기다리지 않는다.
       // 실패/타임아웃은 조용히 무시한다(로컬 저장이 항상 우선, 종료를 절대 깨지 않는다).
       const displayScore = result.displayScore;
-      const dateISO = toDateISO(new Date());
       void (async () => {
         try {
           const deviceId = await getOrCreateDeviceId();
