@@ -31,6 +31,14 @@ export interface WalkContextSample {
   smartphoneUseMinutes: number;
   walkMinutes: number;
   timeBand?: TimeBand;
+  // FEAT-002 (Option A - Step 1): 증거 밴드별 분(minute). 모두 선택 필드(하위호환).
+  // 호출부(백그라운드 태스크/훅)는 classifyInterval 결과로 이 값들을 채우고,
+  // smartphoneUseMinutes = confirmedUseMinutes 로 미러링해 기존 채점/검증과 호환을 유지한다.
+  // 이 밴드 필드들은 buildSegmentKey 에 절대 들어가지 않는다(키는 맥락만: zone/risk/weather/time/ear).
+  confirmedUseMinutes?: number;
+  estimatedUseMinutes?: number;
+  unknownUseMinutes?: number;
+  noUseMinutes?: number;
 }
 
 // 진행 중 세션의 순수 상태. sessionStore 가 이 형태를 AsyncStorage 에 직렬화한다.
@@ -70,6 +78,12 @@ export function reduceSession(
       ...last,
       smartphoneUseMinutes: last.smartphoneUseMinutes + sample.smartphoneUseMinutes,
       walkMinutes: last.walkMinutes + sample.walkMinutes,
+      // FEAT-002: 밴드별 분도 함께 누적(없는 값은 0). smartphoneUseMinutes/walkMinutes 누적
+      // 규칙은 위와 동일하게 유지되어 verify-session-reducer.ts 는 불변으로 통과한다.
+      confirmedUseMinutes: bandVal(last.confirmedUseMinutes) + bandVal(sample.confirmedUseMinutes),
+      estimatedUseMinutes: bandVal(last.estimatedUseMinutes) + bandVal(sample.estimatedUseMinutes),
+      unknownUseMinutes: bandVal(last.unknownUseMinutes) + bandVal(sample.unknownUseMinutes),
+      noUseMinutes: bandVal(last.noUseMinutes) + bandVal(sample.noUseMinutes),
     };
     return {
       segments: [...state.segments.slice(0, -1), updated],
@@ -86,9 +100,19 @@ export function reduceSession(
     weather: sample.weather,
     timeBand,
     isEarOccluded,
+    // FEAT-002: 밴드별 분을 샘플에서 초기화(없는 값은 0).
+    confirmedUseMinutes: bandVal(sample.confirmedUseMinutes),
+    estimatedUseMinutes: bandVal(sample.estimatedUseMinutes),
+    unknownUseMinutes: bandVal(sample.unknownUseMinutes),
+    noUseMinutes: bandVal(sample.noUseMinutes),
   };
   return {
     segments: [...state.segments, segment],
     currentKey: key,
   };
+}
+
+// undefined/비유한 밴드 분 값을 0 으로 정규화(순수 헬퍼).
+function bandVal(v: number | undefined): number {
+  return typeof v === 'number' && Number.isFinite(v) ? v : 0;
 }
