@@ -204,6 +204,11 @@ create policy "anon can insert feedback"
 -- (같은 기기는 같은 코드로 보이되 원본 UUID 는 복원 불가). 최신순 정렬.
 -- age_band 컬럼을 추가로 노출한다(원시 device_id 는 여전히 미노출, anon_ref 로 대체).
 -- 대시보드가 연령대 열/필터를 표시할 수 있게 한다. 미선택 행은 age_band = null 로 온다.
+-- 재실행(idempotent) 주의: list_feedback() 은 기존 6개 컬럼에서 age_band 를 추가해
+-- RETURNS TABLE 모양이 바뀌었다. Postgres 는 create or replace 로 반환 컬럼 집합을
+-- 바꾸는 것을 거부하므로("cannot change return type of existing function"), 기존 DB에
+-- schema.sql 을 재실행할 때 먼저 함수를 drop 해야 한다(아래 grant 는 재정의 후 다시 부여).
+drop function if exists public.list_feedback();
 create or replace function public.list_feedback()
 returns table (
   category text,

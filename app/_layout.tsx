@@ -47,6 +47,11 @@ export default function RootLayout() {
 
   useEffect(() => {
     if (onboardingDone === null) return; // 아직 조회 중
+    // 이번 세션에서 이미 온보딩을 완료했다면, 상태(onboardingDone)가 아직 true 로
+    // 커밋되기 전이라도 절대 온보딩으로 되돌리지 않는다. router.replace('/') 로 인한
+    // segments 변경이 setOnboardingDone(true) 커밋보다 먼저 관찰되는 경합에서도
+    // 루프를 원천 차단한다(콜드 재시작 시 이 플래그는 false 로 초기화된다).
+    if (wasCompletedThisSession()) return;
     const inOnboarding = segments[0] === 'onboarding';
     if (!onboardingDone && !inOnboarding) {
       // 최초 실행 & 온보딩 밖 -> 온보딩으로 유도.

@@ -8,6 +8,11 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
 // 사용자에게 노출/저장하는 연령대 밴드. 정확한 나이는 절대 다루지 않는다.
+// [단일 출처] 이 밴드 문자열 집합은 여기가 사실상 기준이다. RN/SQL 경계를 넘는 공유
+// 소스는 두지 않되(과설계 회피), 값을 바꾸거나 추가할 때는 아래 세 곳을 함께 고쳐야 한다:
+//   1) 이 파일(AgeBand / VALID_BANDS / AGE_BAND_OPTIONS)
+//   2) src/data/supabase.ts 의 AgeBandValue(서버 페이로드용 재선언)
+//   3) supabase/schema.sql 의 age_band check 제약(wss_scores/feedback) 및 by-age RPC 정렬
 export type AgeBand = '10s' | '20s' | '30s' | '40s' | '50plus';
 
 const AGE_BAND_KEY = 'wss.ageBand.v1';

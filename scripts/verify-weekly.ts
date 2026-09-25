@@ -103,6 +103,37 @@ const mixed = computeWeeklyDaily(
 assert('혼합: 03-14 대표 30(첫 매칭)', mixed[5].score === 30);
 assert('혼합: 03-15 대표 80', mixed[6].score === 80);
 
+// (g) 같은 날 최신 항목의 점수가 비유한이면, 같은 날의 더 오래된 유한 점수가 대표가 된다.
+// 계약: 대표는 "그날의 마지막 보행"이되 유한 점수가 있어야 확정한다(빈 막대로 가려지지 않음).
+const nonFiniteNewest = computeWeeklyDaily(
+  [
+    { dateISO: '2026-03-15', displayScore: Number.NaN }, // 최신이지만 비유한 -> 건너뜀
+    { dateISO: '2026-03-15', displayScore: 77 }, // 같은 날 더 오래된 유한 점수 -> 대표
+  ],
+  TODAY
+);
+assert('비유한 최신 -> 같은 날 오래된 유한 77 이 대표', nonFiniteNewest[6].score === 77);
+
+// (g-2) 점수 필드가 누락된 최신 항목도 마찬가지로 건너뛰고, 같은 날 유한 점수가 대표.
+const missingScoreNewest = computeWeeklyDaily(
+  [
+    { dateISO: '2026-03-15' } as unknown as { dateISO: string; displayScore: number }, // 점수 누락 -> 건너뜀
+    { dateISO: '2026-03-15', displayScore: 63 }, // 같은 날 유한 점수 -> 대표
+  ],
+  TODAY
+);
+assert('점수 누락 최신 -> 같은 날 유한 63 이 대표', missingScoreNewest[6].score === 63);
+
+// (g-3) 같은 날 모든 항목이 비유한이면 그 날은 null(빈 막대) 로 남는다.
+const allNonFinite = computeWeeklyDaily(
+  [
+    { dateISO: '2026-03-15', displayScore: Number.NaN },
+    { dateISO: '2026-03-15', displayScore: Number.POSITIVE_INFINITY },
+  ],
+  TODAY
+);
+assert('같은 날 전부 비유한 -> null', allNonFinite[6].score === null);
+
 if (failures > 0) {
   console.log(`\n${failures} assertion(s) FAILED`);
   process.exit(1);

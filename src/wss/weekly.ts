@@ -95,11 +95,14 @@ export function computeWeeklyDaily(
     const iso = entry.dateISO;
     const idx = indexByDate[iso];
     if (idx === undefined) continue; // 창 밖의 날짜는 제외.
-    if (filled[iso]) continue; // 이미 더 최근 항목으로 채워짐.
-    const score = typeof entry.displayScore === 'number' && Number.isFinite(entry.displayScore)
-      ? entry.displayScore
-      : null;
-    days[idx].score = score;
+    if (filled[iso]) continue; // 이미 더 최근(유한 점수) 항목으로 채워짐.
+    // 계약: 대표는 "그날의 마지막 보행"이되, 유한한 점수가 있어야 대표로 확정한다.
+    // 최신 항목의 점수가 비유한(NaN/Infinity)/누락이면 이 항목은 건너뛰어, 같은 날의
+    // 더 오래된 유한 점수 보행이 대표가 될 수 있게 한다(빈 막대로 가려지지 않도록).
+    if (typeof entry.displayScore !== 'number' || !Number.isFinite(entry.displayScore)) {
+      continue;
+    }
+    days[idx].score = entry.displayScore;
     filled[iso] = true;
   }
 
