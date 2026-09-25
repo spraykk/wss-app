@@ -1,4 +1,4 @@
-# App Store 리스팅 초안 — 보행안전 WSS
+# App Store 리스팅 초안 — 보행 개선
 
 이 문서는 App Store Connect 제출용 메타데이터 초안입니다. 실제 제출은 사용자 Apple Developer 계정에서 진행합니다(아래 "제출 체크리스트" 참조).
 
@@ -8,7 +8,8 @@
 
 ## 앱 이름 / 부제
 
-- **앱 이름 (App Name, 30자 이내)**: `보행안전 WSS`
+- **앱 이름 (App Name, 30자 이내)**: `보행 개선`
+  - 참고: 영문명(English App Name)은 기존 표기를 유지하거나 `Walking Safety` 를 제안합니다(선택). 식별자(slug/bundleId/scheme)는 변경하지 않습니다.
 - **부제 (Subtitle, 30자 이내)**: `사고다발구역 진입 경고`
 
 ## 키워드 (Keywords, 100자 이내, 쉼표 구분)

@@ -33,6 +33,8 @@ import { loadActiveSession, saveActiveSession } from './sessionStore';
 import type { ActiveSession } from './sessionStore';
 import { readAudioEnvironmentSnapshot } from '../sensors/useAudioEnvironment';
 import { isEarEffectivelyOccluded } from '../sensors/audioState';
+import { classifyMotion, createInitialMotionState } from '../sensors/motionClassifier';
+import type { MotionState } from '../sensors/motionClassifier';
 
 // 세션 파이프라인 백그라운드 태스크 이름. TaskManager.defineTask 는 모듈 로드 시 1회만
 // 정의되어야 하므로 모듈 스코프 상수로 둔다. 지오펜스 태스크(GEOFENCE_TASK_NAME)와는
@@ -119,6 +121,21 @@ export async function processLocationSample(
 // ─────────────────────────────────────────────────────────────────────────────
 let lastProcessedAt: number | null = null;
 
+// 차량 탑승 오인 방지: 백그라운드 위치 샘플의 속도(coords.speed)를 순수 분류기로 분류해
+// 'vehicle' 로 판정되는 구간은 세션 세그먼트로 쌓지 않는다(포그라운드 detector 와 동일 로직).
+// Pedometer 걸음은 백그라운드 위치 태스크에 없으므로 속도만으로 분류한다(도보 속도+고속 쿨다운).
+let motionState: MotionState = createInitialMotionState();
+
+// 위치 샘플이 차량 구간인지 판정하고, 다음 처리를 스킵해야 하면 true 를 반환한다.
+// speed 가 없거나 음수(미측정)면 분류를 건너뛰고 처리를 허용한다(false).
+function shouldSkipAsVehicle(sample: Location.LocationObject, nowMs: number): boolean {
+  const speed = sample.coords.speed;
+  if (speed === null || speed === undefined || speed < 0) return false;
+  const { mode, next } = classifyMotion(motionState, { speedMps: speed, nowMs });
+  motionState = next;
+  return mode === 'vehicle';
+}
+
 TaskManager.defineTask(SESSION_LOCATION_TASK_NAME, async ({ data, error }) => {
   if (error) return;
   const payload = data as { locations?: Location.LocationObject[] } | undefined;
@@ -127,6 +144,13 @@ TaskManager.defineTask(SESSION_LOCATION_TASK_NAME, async ({ data, error }) => {
 
   const latest = locations[locations.length - 1];
   const nowMs = latest.timestamp ?? Date.now();
+
+  // 차량 구간이면 세그먼트를 쌓지 않고 스킵(경과분 기준점은 유지해 다음 보행 구간 왜곡 방지).
+  if (shouldSkipAsVehicle(latest, nowMs)) {
+    lastProcessedAt = nowMs;
+    return;
+  }
+
   const elapsedMinutes = lastProcessedAt ? Math.max(0, (nowMs - lastProcessedAt) / 60000) : 0;
   lastProcessedAt = nowMs;
 
@@ -148,6 +172,11 @@ export function makeGeofenceSessionCallbacks(): {
 } {
   const handle = (sample: Location.LocationObject): void => {
     const nowMs = sample.timestamp ?? Date.now();
+    // 차량 구간이면 세그먼트를 쌓지 않고 스킵(기준점만 갱신).
+    if (shouldSkipAsVehicle(sample, nowMs)) {
+      lastProcessedAt = nowMs;
+      return;
+    }
     const elapsedMinutes = lastProcessedAt ? Math.max(0, (nowMs - lastProcessedAt) / 60000) : 0;
     lastProcessedAt = nowMs;
     void processLocationSample(
@@ -170,4 +199,5 @@ export function makeGeofenceSessionCallbacks(): {
 // 백그라운드 처리기 상태를 리셋한다(세션 종료 시 호출).
 export function resetSessionTaskState(): void {
   lastProcessedAt = null;
+  motionState = createInitialMotionState();
 }

@@ -36,6 +36,7 @@ const EARTH_RADIUS_METERS = 6371000;
 //   이중 인코딩하면 HTTP 400 이 난다 -> normalizeApiKey 로 "정확히 한 번" 인코딩.
 // - 지역명 서버측 필터 파라미터는 없다. 전체(전국 약 12,780건)를 페이지네이션으로
 //   순회하며 클라이언트에서 ctprvnSignguNm 문자열 매칭으로 거른다.
+//   regionKeyword 를 생략/빈문자열로 주면 필터를 건너뛰어 "전국 전체"를 그대로 저장한다.
 // - 성공 응답 구조에는 최상위 response 래퍼가 없다: { header, body }.
 //   header.resultCode === '00' 이면 정상. body.items.item[] 에 지점들이 들어온다.
 // - 위경도는 latitude/longitude(문자열, 위경도 맞음)를 쓴다.
@@ -68,15 +69,20 @@ interface TaasResponse {
   };
 }
 
-// TAAS 표준 사고다발지 API 에서 전국 데이터를 페이지네이션으로 순회하며,
-// ctprvnSignguNm 이 regionKeyword 를 포함하는 지점만 AccidentZone[] 로 반환한다.
+// TAAS 표준 사고다발지 API 에서 전국 데이터를 페이지네이션으로 순회한다.
+// - regionKeyword 가 비어 있으면(빈 문자열/undefined) 필터를 건너뛰고 "전국 전체"를 저장한다.
+// - regionKeyword 가 주어지면 ctprvnSignguNm 이 그 키워드를 포함하는 지점만 반환한다(하위호환).
 //
 // @param apiKey        data.go.kr serviceKey (인코딩/원시 무관 - normalizeApiKey 로 정규화)
-// @param regionKeyword 클라이언트측 지역 필터 키워드(예: '관악구'). ctprvnSignguNm 부분일치.
+// @param regionKeyword (선택) 클라이언트측 지역 필터 키워드(예: '관악구'). ctprvnSignguNm 부분일치.
+//                      생략/빈문자열이면 전 지역 포함(필터 스킵) -> 전국 전체(약 12,780건).
 export async function fetchAccidentZonesFromTAAS(
   apiKey: string,
-  regionKeyword: string
+  regionKeyword?: string
 ): Promise<AccidentZone[]> {
+  // 필터 키워드를 정규화: undefined/공백만 있으면 "전국 전체"(필터 스킵)로 취급한다.
+  const filterKeyword = (regionKeyword ?? '').trim();
+  const filterAll = filterKeyword.length === 0;
   const serviceKey = normalizeApiKey(apiKey);
   const numOfRows = 1000;
   const zones: AccidentZone[] = [];
@@ -109,7 +115,8 @@ export async function fetchAccidentZonesFromTAAS(
 
     for (const row of items) {
       const region = row.ctprvnSignguNm ?? '';
-      if (!region.includes(regionKeyword)) continue;
+      // 전국 모드(filterAll)면 필터를 건너뛰고 전부 포함한다. 지역 모드면 부분일치만 포함.
+      if (!filterAll && !region.includes(filterKeyword)) continue;
       zones.push({
         id: row.acdntAreaManageNo ?? `taas-${pageNo}-${zones.length}`,
         name: row.acdntAreaLcNm ?? '이름미상 사고다발지',
@@ -185,6 +192,14 @@ export function haversineMeters(
 }
 
 // 임계값(thresholdMeters) 이내로 서로 인접한 zone 들을 하나로 병합하는 순수 함수.
+//
+// 전국 데이터 규모 주의(성능): 이 함수는 모든 쌍(i, j)을 비교하는 O(n^2) 알고리즘이다.
+// 관악(137행)에서는 무시할 만하지만, 전국 전체(약 12,780행)에서는 약 8천만 회 비교가
+// 되어 loadAccidentZones() 최초 호출이 눈에 띄게 느려질 수 있다(수백 ms~초 단위).
+// 다만 loadAccidentZones 는 앱 실행/세션당 1회성 로드이고, 지오펜스는 selectNearestZones
+// 로 근처 N개만 등록하므로 런타임(이동 중) 성능에는 영향이 없다. 필요하면 위경도 기반
+// 공간격자(spatial grid)/버킷으로 이웃 후보만 비교해 O(n) 근처로 최적화할 수 있다
+// (격자 셀 크기를 threshold 로 잡고 인접 9셀만 검사). 현재는 1회성 로드라 그대로 둔다.
 // - 클러스터링: 진정한 전이적(transitive) 클러스터링 = 겹침 그래프의 연결 요소
 //   (connected components). zone i, j 사이의 haversine 거리 <= threshold 이면
 //   두 zone 을 잇는 간선(edge)으로 보고, union-find 로 연결 요소를 계산한다.
@@ -311,6 +326,12 @@ export function loadRawAccidentZones(): AccidentZone[] {
 }
 
 // 앱에서 사용하는 진입점: 원시 데이터 로드 후 중복 병합/후처리된 zone 목록을 반환한다.
+//
+// 전국 데이터 주의: accident-zones.json 을 전국 전체(약 12,780건, 수 MB)로 교체하면
+// 이 함수의 최초 호출에서 mergeNearbyZones(O(n^2)) 비용이 커질 수 있다(위 주석 참고).
+// 그러나 (1) 로드는 세션당 1회이고 (2) 지오펜스는 selectNearestZones 로 근처 N개만
+// 등록하므로, 실제 이동 중 런타임 성능/메모리에는 문제가 없다. postProcessZones 의
+// id 고유화·dedup 파이프라인은 전국 데이터에도 동일하게 동작한다.
 export function loadAccidentZones(): AccidentZone[] {
   return postProcessZones(loadRawAccidentZones());
 }

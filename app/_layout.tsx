@@ -45,7 +45,7 @@ export default function RootLayout() {
     <>
       <StatusBar style="auto" />
       <Stack screenOptions={{ headerTitleAlign: 'center' }}>
-        <Stack.Screen name="index" options={{ title: '보행 안전 점수' }} />
+        <Stack.Screen name="index" options={{ title: '보행 개선' }} />
         <Stack.Screen name="map" options={{ title: '위험 지도' }} />
         <Stack.Screen name="report" options={{ title: 'WSS 리포트' }} />
         <Stack.Screen name="onboarding/index" options={{ headerShown: false }} />
