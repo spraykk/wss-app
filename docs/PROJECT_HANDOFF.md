@@ -91,10 +91,20 @@ belowCriticalThreshold = rawScore < 60
 ## 4. 백그라운드 측정 파이프라인 (`src/session/backgroundTask.ts`)
 
 - iOS는 임의 타이머로 백그라운드 실행을 보장하지 않으므로, **setInterval을 쓰지 않고 이벤트 기반**으로 동작한다.
-- 깨움 트리거: (1) 지오펜스 region ENTER 이벤트, (2) 구역 내 정밀 위치 업데이트.
+- 깨움 트리거: (1) **세션 동안 켜두는 연속 백그라운드 위치 업데이트**(핵심), (2) 지오펜스 region ENTER 이벤트, (3) 구역 내 정밀 위치 업데이트.
 - 각 트리거마다 `processLocationSample()`: 현재 위치 감싸는 위험구역 계산 → 날씨(TTL 캐시) → 오디오 환경 → 순수 리듀서로 세그먼트 누적 → WSS 재계산 → 조건 충족 시 로컬 알림.
-- **저전력 전략**: 상시 고정밀 GPS 대신 지오펜스(근접 위험구역 최대 18개 + boundary 1개, iOS 20 region 하드캡 대응)만 등록. 구역 진입 시에만 정밀 추적 상향(escalate), 이탈 시 하향(de-escalate).
+- **왜 연속 위치 업데이트가 필요한가(결함 수정)**: 자세 기반 사용 감지(자이로 pitch → `classifyPostureInterval` → `confirmedUseMinutes` → 감점)는 "위치 이벤트가 오는 순간"의 최신 자세를 읽어 구동된다. 그런데 지오펜스/정밀추적은 **위험구역 안에서만** 위치 이벤트를 만든다. 그래서 위험구역 밖에서 폰을 보며 걸으면 iOS가 프로세스를 재우고 자이로 리스너 콜백까지 멈춰 감점이 중단될 수 있었다. 이를 막기 위해 세션 시작 시 `Location.startLocationUpdatesAsync(SESSION_LOCATION_TASK_NAME, ...)`로 **연속 위치 업데이트를 실제로 시작**해 프로세스를 세션 동안 살려둔다(`useWalkSession.start` → `startSessionLocationUpdates`). 그러면 자이로 리스너가 계속 콜백을 받아 자세 평가·감점이 **위험구역 안팎 무관하게 지속**된다. 세션 종료 시 `stopSessionLocationUpdates`가 반드시 중지한다(배터리/프라이버시).
+  - 옵션: `accuracy=Balanced`, `distanceInterval=0`+`timeInterval=5000`(정지 중에도 시간 기반 이벤트 → 멈춰서 폰 봐도 자세 평가), iOS `pausesUpdatesAutomatically=false`(자동 일시정지 방지)·`showsBackgroundLocationIndicator=true`(파란 인디케이터로 정직 노출)·`activityType=Fitness`, Android `foregroundService` 안내 문구. 지오펜스 경로는 보조로 유지되며 둘 다 있어도 `lastProcessedAt` 공유로 elapsedMinutes 이중계산이 방어된다.
+  - **권한**: 연속 백그라운드 업데이트는 iOS **Always** 권한이 이상적이다. `start()`는 `requestBackgroundPermissionsAsync`를 best-effort로 요청하지만, 사용자가 "앱 사용 중에만(WhenInUse)"만 허용하면 연속성이 **포그라운드/화면 켜짐에 한정**된다(정직한 한계). `app.json`의 `UIBackgroundModes:location`은 이미 있음.
+  - **정직한 한계(OS 보장 아님)**: 연속 위치 업데이트는 세션 동안 프로세스 생존 가능성을 크게 높이는 수단이지 절대 보장이 아니다. iOS는 배터리/메모리 압박 등 극단 상황에서 프로세스를 언제든 종료할 수 있고, 사용자가 앱을 **스와이프로 강제 종료하면 멈춘다(정상)**. 프로세스가 잠들거나 종료되어 자세 샘플이 끊긴 구간은 staleness 판정으로 **no-use로 귀속**되어 감점이 뻥튀기되지 않는다.
+- **저전력 전략**: 상시 고정밀 GPS 대신 연속 업데이트는 Balanced 정확도로만 유지하고, 위험구역 정밀 추적(BestForNavigation)은 지오펜스(근접 위험구역 최대 18개 + boundary 1개, iOS 20 region 하드캡 대응) 진입 시에만 상향(escalate), 이탈 시 하향(de-escalate)한다.
 - **차량 오인 방지** (`src/sensors/motionClassifier.ts`): GPS 속도로 walking/vehicle/idle 분류. 15km/h 이상이면 vehicle 모드+60초 쿨다운. 차량 구간은 세그먼트로 안 쌓음. Pedometer 걸음 증가를 보조 신호로 사용.
+
+### 온디바이스 검증 항목(샌드박스 실행 불가 - 실기기 필수)
+- 세션 시작 후 **화면을 끄고** 위험구역 **밖**에서 폰을 보며(pitch>=10도) 3초 이상 걸을 때, 자세 감지·감점이 계속 누적되는지(연속 위치 업데이트로 프로세스가 살아 자이로가 지속 수신되는지) 확인.
+- **다른 앱을 사용하며** 걸을 때도 자세 감지·감점이 이어지는지 확인(백그라운드 연속성).
+- iOS 위치 권한을 "앱 사용 중에만"으로 준 경우 백그라운드 연속성이 제한됨을, "항상"으로 준 경우 개선됨을 각각 확인.
+- 세션 종료 시 파란 위치 인디케이터가 사라지고(업데이트 중지), 배터리 소모가 상시 고정밀 대비 과하지 않은지 확인.
 
 ---
 

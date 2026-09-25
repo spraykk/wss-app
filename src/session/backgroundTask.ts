@@ -311,11 +311,13 @@ function shouldSendCriticalScoreAlert(nowMs: number): boolean {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 백그라운드 위치 업데이트 태스크(선택적 상향 추적용).
-// 구역 진입 후 백그라운드에서도 위치 업데이트를 받아 세션을 이어가려면
-// Location.startLocationUpdatesAsync(SESSION_LOCATION_TASK_NAME, ...) 로 시작한다.
-// 이 태스크는 OS 가 유의미한 위치변화가 있을 때 깨워 실행한다(타이머 아님).
-// 마지막 처리 시각을 프로세스 메모리에 두고, 그 사이 경과분을 elapsedMinutes 로 넘긴다.
+// 백그라운드 연속 위치 업데이트 태스크.
+// 세션 시작 시 startSessionLocationUpdates() 가 실제로
+// Location.startLocationUpdatesAsync(SESSION_LOCATION_TASK_NAME, ...) 를 호출해 시작하고,
+// 종료 시 stopSessionLocationUpdates() 가 중지한다(위 헬퍼 참고). 이 연속 업데이트가
+// 세션 동안 프로세스를 살려둬 자이로 리스너(자세 평가)가 위험구역 안팎 무관하게 지속된다.
+// 마지막 처리 시각을 프로세스 메모리(lastProcessedAt)에 두고, 그 사이 경과분을 elapsedMinutes
+// 로 넘긴다. 지오펜스 콜백도 같은 lastProcessedAt 을 공유해 이중계산을 방어한다.
 // ─────────────────────────────────────────────────────────────────────────────
 let lastProcessedAt: number | null = null;
 
@@ -332,6 +334,75 @@ function shouldSkipAsVehicle(sample: Location.LocationObject, nowMs: number): bo
   const { mode, next } = classifyMotion(motionState, { speedMps: speed, nowMs });
   motionState = next;
   return mode === 'vehicle';
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 세션 동안 "연속 백그라운드 위치 업데이트" 시작/중지 (핵심 결함 수정)
+//
+// 왜 필요한가: 자세 기반 사용 감지(processLocationSample -> classifyPostureInterval ->
+// confirmedUseMinutes -> computeWSS 감점)는 "위치 이벤트가 올 때"의 최신 자이로 자세를 읽어
+// 구동된다. 그런데 지오펜스(region ENTER)/정밀추적은 "위험구역 안"에서만 위치 이벤트를
+// 만든다. 위험구역 밖에서 폰을 보며 걸으면 위치 이벤트가 드물어 iOS 가 프로세스를 재우고,
+// DeviceMotion/Accelerometer 콜백까지 멈춰 자세 평가·감점이 중단될 수 있다(사용자 지적 결함).
+//
+// 해결: 세션 내내 Location.startLocationUpdatesAsync 로 "연속 위치 업데이트"를 실제로 시작해
+// 프로세스를 세션 동안 살려둔다. 그러면 자이로 리스너가 계속 콜백을 받아 자세 평가·감점이
+// 위험구역 안팎 무관하게 지속된다. 이 태스크가 오는 위치 샘플도 지오펜스 콜백과 같은
+// lastProcessedAt 을 공유하므로 elapsedMinutes 이중계산이 방어된다(둘 다 있어도 무해).
+//
+// [권한] 연속 백그라운드 업데이트는 iOS Always 권한이 이상적이다. Always 가 없으면(WhenInUse
+// 뿐이면) 포그라운드에 한정되어 동작한다(화면 켜짐/앱 전면일 때만 연속). start()는 이미
+// requestBackgroundPermissionsAsync 를 best-effort 로 호출한다. 여기서는 시작 실패(Expo Go/
+// 미지원/권한없음)를 조용히 삼켜 세션 시작을 깨지 않는다.
+//
+// [정직한 한계] iOS 는 배터리/메모리 압박 등 극단 상황에서 프로세스를 언제든 종료할 수 있고,
+// 사용자가 앱을 스와이프로 강제 종료하면 업데이트가 멈춘다(정상). 연속 위치 업데이트는
+// 프로세스 생존 가능성을 크게 높이는 수단이지 OS 수준의 절대 보장이 아니다. 이 메커니즘/한계와
+// 온디바이스 검증 항목은 docs/PROJECT_HANDOFF.md 에 정직하게 남긴다.
+
+// 세션 동안 프로세스를 살려두기 위한 연속 위치 업데이트를 시작한다. RN 런타임 전용.
+// 실패(Expo Go/미지원/권한없음)는 조용히 no-op 한다(세션 시작을 깨지 않음). 이미 실행 중이면
+// 중복 시작하지 않는다. 지오펜스 경로는 보조로 그대로 유지한다(둘 다 있어도 무해).
+export async function startSessionLocationUpdates(): Promise<void> {
+  try {
+    const running = await Location.hasStartedLocationUpdatesAsync(SESSION_LOCATION_TASK_NAME);
+    if (running) return;
+    await Location.startLocationUpdatesAsync(SESSION_LOCATION_TASK_NAME, {
+      // 자이로가 주기적으로 평가되도록 위치 이벤트가 충분히 오게 하되, 상시 최고정밀은
+      // 피해 배터리 소모를 억제한다(구역 안 정밀추적은 지오펜스가 별도 상향).
+      accuracy: Location.Accuracy.Balanced,
+      // distanceInterval=0 + timeInterval 로 정지 중에도 시간 기반으로 이벤트가 오게 한다
+      // (걷다 멈춰 폰을 봐도 자세가 계속 평가되도록). 값은 배터리/연속성 균형의 설계값.
+      distanceInterval: 0,
+      timeInterval: 5000,
+      // iOS: 백그라운드에서 프로세스를 재우지 않도록 자동 일시정지를 끈다(연속성 핵심).
+      pausesUpdatesAutomatically: false,
+      // iOS: 백그라운드 위치 사용 중임을 파란 인디케이터로 정직하게 노출한다.
+      showsBackgroundLocationIndicator: true,
+      // iOS: 활동 유형을 보행(fitness)으로 명시해 OS 최적화 힌트를 준다.
+      activityType: Location.ActivityType.Fitness,
+      // Android: 포그라운드 서비스 안내 문구(백그라운드 위치 필수 요건).
+      foregroundService: {
+        notificationTitle: '보행 측정 중',
+        notificationBody: '안전 점수를 위해 위치와 자세를 측정하고 있어요.',
+      },
+    });
+  } catch {
+    // Expo Go/미지원/권한없음 -> 안전 no-op. 지오펜스+포그라운드 센서로 부분 동작.
+  }
+}
+
+// 세션 종료 시 연속 위치 업데이트를 반드시 중지한다(배터리/프라이버시). RN 런타임 전용.
+// 실행 중일 때만 중지하며, 실패는 조용히 삼켜 종료 흐름을 깨지 않는다.
+export async function stopSessionLocationUpdates(): Promise<void> {
+  try {
+    const running = await Location.hasStartedLocationUpdatesAsync(SESSION_LOCATION_TASK_NAME);
+    if (running) {
+      await Location.stopLocationUpdatesAsync(SESSION_LOCATION_TASK_NAME);
+    }
+  } catch {
+    // 미지원/미실행 -> 무시.
+  }
 }
 
 TaskManager.defineTask(SESSION_LOCATION_TASK_NAME, async ({ data, error }) => {

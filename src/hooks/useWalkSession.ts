@@ -37,6 +37,8 @@ import {
   resetSessionTaskState,
   startPostureSensors,
   stopPostureSensors,
+  startSessionLocationUpdates,
+  stopSessionLocationUpdates,
 } from '../session/backgroundTask';
 // FEAT-003: 세션 간 인앱 상호작용 증거가 새지 않도록 start()/stop() 에서 초기화한다.
 import { resetInteractions } from '../session/interactionTracker';
@@ -132,6 +134,12 @@ export function useWalkSession(): UseWalkSession {
     // UIBackgroundModes:location 로 프로세스가 살아있는 동안 읽힌다(iOS 백그라운드 연속성은
     // 보장 불가 - backgroundTask.startPostureSensors 주석 참고). 실패해도 세션 시작을 깨지 않는다.
     startPostureSensors();
+    // 핵심 결함 수정: 세션 동안 "연속 백그라운드 위치 업데이트"를 실제로 시작해 프로세스를
+    // 살려둔다. 그래야 위험구역 밖에서 폰을 보며 걸을 때도 iOS 가 프로세스를 재우지 않아
+    // 자이로 리스너가 계속 콜백을 받고 자세 평가·감점이 세션 내내 지속된다(지오펜스만 있으면
+    // 위험구역 안에서만 위치 이벤트가 와 자이로가 멈출 수 있었다). Always 권한이 없으면
+    // 포그라운드 한정으로 동작한다. 실패해도 세션 시작을 깨지 않도록 best-effort(내부 try/catch).
+    await startSessionLocationUpdates();
     await saveActiveSession(startedSession);
     if (isMountedRef.current) setSession(startedSession);
 
@@ -159,6 +167,9 @@ export function useWalkSession(): UseWalkSession {
   const stop = useCallback(async (): Promise<void> => {
     // 지오펜스/정밀 추적 해제.
     await stopGeofencing();
+    // 핵심 결함 수정: 세션 동안 켜둔 연속 위치 업데이트를 반드시 중지한다(배터리/프라이버시).
+    // 실행 중일 때만 중지하며 실패는 조용히 삼켜 종료 흐름을 깨지 않는다(내부 try/catch).
+    await stopSessionLocationUpdates();
     // FEAT-003: 자세 센서 구독 해제(세션 종료). resetSessionTaskState 는 지속 상태를 리셋한다.
     stopPostureSensors();
     resetSessionTaskState();
