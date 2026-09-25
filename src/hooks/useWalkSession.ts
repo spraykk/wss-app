@@ -154,25 +154,30 @@ export function useWalkSession(): UseWalkSession {
     // "측정 중" 지속 알림을 제거한다(실패해도 종료 흐름을 막지 않는다).
     void dismissTrackingNotification().catch(() => {});
 
-    // 최종 세션을 읽어 WSS 결과를 history 에 저장.
+    // 최종 세션을 읽어 WSS 결과를 history 에 저장(로컬 저장은 항상 우선이므로 await).
     const finalSession = await loadActiveSession();
     if (finalSession.segments.length > 0) {
       const result = computeWSS(finalSession.segments);
       await saveResult(result);
 
       // 익명 통계 서버로 최소 데이터만 업로드한다: displayScore(0~100), 날짜, 익명 deviceId.
-      // 위치·경로·rawScore 등은 전송하지 않는다. 미설정/실패 시 no-op 이며 세션 종료·
-      // 로컬 저장을 절대 깨뜨리지 않도록 try/catch 로 감싼다(로컬 저장이 항상 우선).
-      try {
-        const deviceId = await getOrCreateDeviceId();
-        await uploadScore({
-          deviceId,
-          displayScore: result.displayScore,
-          dateISO: toDateISO(new Date()),
-        });
-      } catch {
-        // 업로드 실패는 조용히 무시한다(부가기능).
-      }
+      // 위치·경로·rawScore 등은 전송하지 않는다.
+      //
+      // 중요(렉 방지): 업로드는 부가기능이므로 종료 흐름에서 "기다리지 않는다"(fire-and-forget).
+      // 예전엔 여기서 `await uploadScore(...)` 로 네트워크 왕복을 동기 대기했는데, Supabase
+      // 업로드가 느리거나 실패하면 그 시간만큼 stop 핸들러 → UI 가 멈췄다("보행 종료" 렉).
+      // 이제 deviceId 취득 + 업로드를 백그라운드로 던지고(void) stop 은 이를 기다리지 않는다.
+      // 실패/타임아웃은 조용히 무시한다(로컬 저장이 항상 우선, 종료를 절대 깨지 않는다).
+      const displayScore = result.displayScore;
+      const dateISO = toDateISO(new Date());
+      void (async () => {
+        try {
+          const deviceId = await getOrCreateDeviceId();
+          await uploadScore({ deviceId, displayScore, dateISO });
+        } catch {
+          // 업로드 실패는 조용히 무시한다(부가기능).
+        }
+      })();
     }
 
     // 진행 중 세션 파기.

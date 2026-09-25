@@ -78,6 +78,28 @@ export function isSupabaseConfigured(): boolean {
   return getSupabaseConfig() !== null;
 }
 
+// 네트워크 호출 타임아웃(ms). Supabase 왕복이 무한정 매달려 호출부(세션 종료/피드백/
+// 통계 조회)를 멈추게 하지 않도록, supabase-js 프라미스를 타임아웃과 race 한다.
+// RN 런타임엔 항상 setTimeout 이 있으므로 순수 방식으로 구현한다(새 패키지 불필요).
+const NETWORK_TIMEOUT_MS = 8000;
+
+// 고유 심볼 값으로 "타임아웃 발생"을 표현한다(정상 결과와 절대 충돌하지 않게).
+const TIMEOUT = Symbol('supabase-timeout');
+
+// promise 를 timeoutMs 안에 끝나지 않으면 TIMEOUT 심볼로 resolve 한다.
+// 원 promise 는 계속 진행되도록 두되(취소 API 가 없으므로), 호출부는 TIMEOUT 을
+// 실패로 처리한다. 타이머는 어느 쪽이 이기든 정리한다.
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T | typeof TIMEOUT> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<typeof TIMEOUT>((resolve) => {
+    timer = setTimeout(() => resolve(TIMEOUT), timeoutMs);
+  });
+  return Promise.race([promise, timeout]).then((result) => {
+    if (timer !== undefined) clearTimeout(timer);
+    return result;
+  });
+}
+
 // 클라이언트를 지연 생성해 재사용한다. 미설정이면 null(모든 호출이 no-op 이 된다).
 let cachedClient: unknown | null = null;
 let clientResolved = false;
@@ -122,15 +144,20 @@ export async function uploadScore(payload: WssScoreUpload): Promise<boolean> {
     | null;
   if (!client) return false;
   try {
-    const { error } = await client.from('wss_scores').upsert(
-      {
-        device_id: payload.deviceId,
-        display_score: payload.displayScore,
-        date_iso: payload.dateISO,
-      },
-      { onConflict: 'device_id,date_iso' }
+    const result = await withTimeout(
+      client.from('wss_scores').upsert(
+        {
+          device_id: payload.deviceId,
+          display_score: payload.displayScore,
+          date_iso: payload.dateISO,
+        },
+        { onConflict: 'device_id,date_iso' }
+      ),
+      NETWORK_TIMEOUT_MS
     );
-    return !error;
+    // 타임아웃이면 실패로 처리(false). 예외 없이 조용히 실패한다.
+    if (result === TIMEOUT) return false;
+    return !result.error;
   } catch {
     return false;
   }
@@ -219,15 +246,22 @@ export async function submitFeedbackDetailed(
     | null;
   if (!client) return { ok: false, reason: 'not_configured' };
   try {
-    const { error } = await client.from('feedback').insert({
-      device_id: payload.deviceId,
-      category: payload.category,
-      rating: payload.rating,
-      message,
-      app_version: payload.appVersion,
-    });
-    if (error) {
-      return { ok: false, reason: 'server', detail: describeSupabaseError(error) };
+    const result = await withTimeout(
+      client.from('feedback').insert({
+        device_id: payload.deviceId,
+        category: payload.category,
+        rating: payload.rating,
+        message,
+        app_version: payload.appVersion,
+      }),
+      NETWORK_TIMEOUT_MS
+    );
+    // 타임아웃이면 기존 SubmitResult 계약을 유지하며 사유를 담아 반환한다.
+    if (result === TIMEOUT) {
+      return { ok: false, reason: 'server', detail: `서버 응답이 없어 시간이 초과됐습니다(${NETWORK_TIMEOUT_MS}ms).` };
+    }
+    if (result.error) {
+      return { ok: false, reason: 'server', detail: describeSupabaseError(result.error) };
     }
     return { ok: true };
   } catch (e) {
@@ -252,7 +286,10 @@ export async function fetchStats(): Promise<WssStats | null> {
     | null;
   if (!client) return null;
   try {
-    const { data, error } = await client.rpc('get_wss_stats');
+    const result = await withTimeout(client.rpc('get_wss_stats'), NETWORK_TIMEOUT_MS);
+    // 타임아웃이면 통계 없음으로 처리(null). 리포트 화면은 "데이터 부족"으로 정직 표시.
+    if (result === TIMEOUT) return null;
+    const { data, error } = result;
     if (error) return null;
     // RPC 는 단일 행 테이블을 반환한다. 배열/객체 양쪽 모양을 방어적으로 처리한다.
     const row = (Array.isArray(data) ? data[0] : data) as
