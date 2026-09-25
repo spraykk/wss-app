@@ -25,7 +25,7 @@ import { loadAccidentZones, findEnclosingZones } from '../data/accidentZones';
 import { computeRiskIntensity } from '../wss/weights';
 import { getCurrentTimeBand } from '../wss/context';
 import { computeWSS } from '../wss/engine';
-import { presentHighRiskAlert } from '../notifications/alerts';
+import { presentHighRiskAlert, presentCriticalScoreAlert } from '../notifications/alerts';
 import { getCachedWeather } from './weatherCache';
 import { reduceSession } from './sessionReducer';
 import type { WalkContextSample } from './sessionReducer';
@@ -110,6 +110,25 @@ export async function processLocationSample(
   if (wss.enteredHighRiskZoneWhileUsingPhone || wss.belowCriticalThreshold) {
     await presentHighRiskAlert(zoneName || '위험 구간');
   }
+  // 점수 자체가 위험 구간(60점 미만)으로 떨어지면 추가 위험 알림을 보낸다.
+  // 세션당 과다발송을 막기 위해 쿨다운 가드를 둔다(구역 진입 경고와 별개 채널의 문구).
+  if (wss.belowCriticalThreshold && shouldSendCriticalScoreAlert(now.getTime())) {
+    await presentCriticalScoreAlert();
+  }
+}
+
+// 60점 미만 추가 위험 알림의 세션 내 쿨다운(밀리초). 이벤트 트리거가 잦은 구역에서
+// 알림이 도배되지 않도록, 마지막 발송 이후 이 시간이 지나야 다시 보낸다.
+const CRITICAL_SCORE_ALERT_COOLDOWN_MS = 5 * 60 * 1000;
+let lastCriticalScoreAlertAt: number | null = null;
+
+// 마지막 발송 이후 쿨다운이 지났으면 true 를 반환하고 발송 시각을 갱신한다.
+function shouldSendCriticalScoreAlert(nowMs: number): boolean {
+  if (lastCriticalScoreAlertAt !== null && nowMs - lastCriticalScoreAlertAt < CRITICAL_SCORE_ALERT_COOLDOWN_MS) {
+    return false;
+  }
+  lastCriticalScoreAlertAt = nowMs;
+  return true;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -200,4 +219,5 @@ export function makeGeofenceSessionCallbacks(): {
 export function resetSessionTaskState(): void {
   lastProcessedAt = null;
   motionState = createInitialMotionState();
+  lastCriticalScoreAlertAt = null;
 }

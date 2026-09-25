@@ -46,7 +46,7 @@ export interface WSSResult {
   usageRatio: number;
   /** 위험지역 진입 감지 여부 (실시간 알림 트리거용) */
   enteredHighRiskZoneWhileUsingPhone: boolean;
-  /** WSS_critical 미만 여부 (보고서 임계점 80.605 기준, 잠금해제 강화 등 트리거) */
+  /** WSS_critical 미만 여부 (보고서 임계점 60 기준, 알림/위험표시 등 트리거) */
   belowCriticalThreshold: boolean;
   segmentBreakdown: Array<{ regionId: string; weight: WeightBreakdown; contribution: number }>;
 }

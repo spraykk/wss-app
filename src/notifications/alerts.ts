@@ -43,6 +43,22 @@ export async function presentHighRiskAlert(zoneName: string): Promise<void> {
   });
 }
 
+// WSS 원점수가 위험 구간(임계점 60점 미만, belowCriticalThreshold)으로 떨어졌을 때
+// 표시하는 추가 위험 알림. 고위험 zone 진입 경고(presentHighRiskAlert)와 별개로,
+// "점수 자체가 위험 구간"임을 알린다. 권한이 없으면 조용히 no-op 한다.
+export async function presentCriticalScoreAlert(): Promise<void> {
+  const granted = await requestNotificationPermission();
+  if (!granted) return;
+  await Notifications.scheduleNotificationAsync({
+    content: {
+      title: '보행 안전 경고',
+      body: '현재 점수가 위험 구간(60점 미만)입니다. 스마트폰 사용을 멈추고 주변을 살펴 주세요.',
+      sound: true,
+    },
+    trigger: null, // 즉시 표시
+  });
+}
+
 // Android 전용: 지속 알림용 저중요도 채널을 준비한다(1회 등록으로 충분, 반복 호출 무해).
 // iOS 에는 채널 개념이 없으므로 no-op. 권한/미지원 시 조용히 무시한다.
 export async function ensureTrackingChannel(): Promise<void> {

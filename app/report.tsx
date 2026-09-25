@@ -7,10 +7,55 @@ import { fetchStats } from '../src/data/supabase';
 import type { WssStats } from '../src/data/supabase';
 import type { WSSResult } from '../src/types';
 import { palette, spacing, radius, font, shadow } from '../src/theme';
+import { classifyGrade } from '../src/wss/grade';
+import type { WssGrade } from '../src/wss/grade';
+import { WSS_CRITICAL } from '../src/wss/weights';
 
 // 통계 표시에 필요한 최소 표본 수. 이보다 적으면(또는 미설정/오류면) 가짜 숫자를
 // 보여주지 않고 "아직 데이터가 부족합니다"로 정직하게 표시한다.
 const MIN_STATS_SAMPLE = 5;
+
+// 등급별 파스텔 피드백 프리셋(색·문구·아이콘 다르게). theme.ts 파스텔 토큰 사용.
+const GRADE_FEEDBACK: Record<WssGrade, { title: string; message: string; bg: string; text: string }> = {
+  danger: {
+    title: '위험',
+    message: '위험 구간입니다. 스마트폰 사용을 줄이고 주변을 살펴 주세요.',
+    bg: palette.dangerBg, // 파스텔 로즈
+    text: palette.dangerText,
+  },
+  caution: {
+    title: '주의',
+    message: '또래 평균보다 낮아요. 조금만 더 주의해요.',
+    bg: palette.yellow, // 연노랑
+    text: palette.cautionText,
+  },
+  good: {
+    title: '양호',
+    message: '평균 이상이에요. 좋은 습관이에요!',
+    bg: palette.safeBg, // 민트/연두
+    text: palette.safeText,
+  },
+  excellent: {
+    title: '우수',
+    message: '상위 25%예요! 훌륭한 보행 습관입니다 🎉',
+    bg: palette.sky, // 스카이/블루
+    text: palette.skyDeep,
+  },
+  insufficient: {
+    title: '측정 중',
+    message: '측정 중이에요. 사용자가 늘어나면 또래 비교와 자세한 피드백을 알려드릴게요.',
+    bg: palette.surfaceAlt, // 중립
+    text: palette.textMuted,
+  },
+};
+
+const GRADE_ICON: Record<WssGrade, string> = {
+  danger: '⚠️',
+  caution: '🟡',
+  good: '🌿',
+  excellent: '🎉',
+  insufficient: '⏳',
+};
 
 export default function ReportScreen() {
   const [history, setHistory] = useState<WSSResult[]>([]);
@@ -29,8 +74,33 @@ export default function ReportScreen() {
     stats.meanScore !== null &&
     stats.q3Score !== null;
 
+  // 등급 분류(순수 함수). displayScore 기준으로 절대기준(60 미만=위험) 우선 판정하고,
+  // 표본이 5명 미만/미집계면 'insufficient'(측정 중)로 정직하게 폴백한다.
+  const grade: WssGrade | null = latest
+    ? classifyGrade(
+        latest.displayScore,
+        {
+          count: stats ? stats.sampleCount : 0,
+          mean: stats ? stats.meanScore : null,
+          q3: stats ? stats.q3Score : null,
+        },
+        WSS_CRITICAL,
+        MIN_STATS_SAMPLE
+      )
+    : null;
+  const feedback = grade ? GRADE_FEEDBACK[grade] : null;
+
   return (
     <ScrollView style={styles.screen} contentContainerStyle={styles.container}>
+      {latest && feedback && grade ? (
+        <View style={[styles.feedbackCard, { backgroundColor: feedback.bg }]}>
+          <Text style={[styles.feedbackTitle, { color: feedback.text }]}>
+            {GRADE_ICON[grade]} {feedback.title}
+          </Text>
+          <Text style={[styles.feedbackMessage, { color: feedback.text }]}>{feedback.message}</Text>
+        </View>
+      ) : null}
+
       {latest ? (
         <View style={styles.card}>
           <Text style={styles.title}>최근 보행 결과</Text>
@@ -130,7 +200,9 @@ export default function ReportScreen() {
           설계자가 설정한 값으로 실제 사고 발생을 예측하지 않습니다.
         </Text>
         <Text style={styles.disclaimer}>
-          기준선(WSS 80.605)은 위험을 단정하는 임계가 아니라 참고 기준선입니다.
+          기준선(WSS 60)은 위험을 단정하는 임계가 아니라 시뮬레이션으로 정한 참고
+          기준선입니다(실제 사고 발생을 예측하지 않습니다). 등급(위험/주의/양호/우수)도
+          이 기준선과 다른 사용자 분포(평균·Q3)를 참고한 상대 지표입니다.
           '다른 사용자와 비교'의 평균·상위 25%(Q3)는 익명으로 모인 다른 사용자들의
           점수·날짜만으로 서버에서 계산한 값이며, 위치·경로는 전송·사용하지 않습니다.
         </Text>
@@ -212,4 +284,12 @@ const styles = StyleSheet.create({
     gap: spacing.sm,
   },
   disclaimer: { fontSize: font.caption, color: palette.textMuted, lineHeight: 18 },
+  feedbackCard: {
+    padding: spacing.lg,
+    borderRadius: radius.md,
+    gap: spacing.xs,
+    ...shadow.card,
+  },
+  feedbackTitle: { fontSize: font.subtitle, fontWeight: '800' },
+  feedbackMessage: { fontSize: font.body, lineHeight: 22, fontWeight: '600' },
 });
