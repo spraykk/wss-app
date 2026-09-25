@@ -62,6 +62,14 @@ export function classifyInterval(evidence: IntervalEvidence, elapsedMinutes: num
 
   if (evidence.hadRecentInteraction) {
     // 실제 터치/스크롤이 확인 창 안에서 발생 -> 유일하게 "확인된" 사용. 이 값만 감점된다.
+    //
+    // [의도된 엣지: 확인 창 번짐(window-bleed)] hadRecentInteraction 을 appForeground 보다
+    // 먼저 확인하므로, 포그라운드에서 터치한 뒤 확인 창(예: 60초) 안에 앱이 백그라운드로
+    // 넘어간 구간도 여기서 confirmedUse 로 분류된다(appForeground=false 라도). 이는 버그가
+    // 아니라 의도된 설계다: 수십 초 전의 실제 터치는 진짜 사용 증거이므로 최근 상호작용을
+    // 백그라운드 신호보다 우선한다. 다만 그 대가로, 해당 구간 내내 앱이 실제로 포그라운드는
+    // 아니었을 수 있는데도 "확인된 사용"으로 귀속될 수 있다(정직한 한계 명시). 창을 짧게
+    // 잡으면 번짐은 줄지만 짧은 이탈에도 사용 증거를 놓친다 - 60초는 그 절충값이다.
     bands.confirmedUseMinutes = minutes;
     return bands;
   }

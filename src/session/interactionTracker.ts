@@ -44,6 +44,13 @@ export function recordInteraction(nowMs: number = Date.now()): void {
 }
 
 // 지금 시점(nowMs) 기준으로 확인 창 안에 최근 인앱 상호작용이 있었는지 반환한다.
+//
+// [의도된 엣지: 확인 창 번짐(window-bleed)] 이 함수는 마지막 상호작용이 창 안이었는지만
+// 보고 현재 AppState(포그라운드/백그라운드)는 보지 않는다. 따라서 사용자가 터치한 직후
+// 확인 창(예: 60초) 안에 앱이 백그라운드로 넘어가면, 그 백그라운드 구간도 최근 상호작용이
+// 있었다고 보고돼 classifyInterval 에서 confirmedUse 로 분류될 수 있다(appForeground=false
+// 라도). 이는 의도된 설계다(수십 초 전의 실제 터치는 진짜 증거). 자세한 근거/절충은
+// usageClassification.ts 의 classifyInterval 주석 참고.
 export function hadRecentInteraction(
   nowMs: number,
   windowMs: number = CONFIRMED_USE_WINDOW_MS

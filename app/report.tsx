@@ -154,7 +154,19 @@ export default function ReportScreen() {
       {latest ? (
         <View style={styles.card}>
           <Text style={styles.title}>최근 보행 결과</Text>
-          <Text style={styles.big}>{Math.round(latest.displayScore)}점</Text>
+          {/* FEAT-003 리뷰 후속(정직성): 측정이 불충분한 보행에서는 큰 점수를 "정상적으로
+              신뢰할 수 있는 결과"처럼 크게 보여주지 않는다. measurementInsufficient 가 true 면
+              점수를 흐리게(muted) 표시하고 "측정 불충분 · 참고용" 라벨을 붙여, 아래의
+              '측정 불충분' 안내 카드와 톤을 일치시킨다. 이 필드가 없는 과거 이력 행
+              (=== true 가 아님)은 예전처럼 큰 점수를 그대로 보여준다. */}
+          {latest.measurementInsufficient === true ? (
+            <View style={styles.bigMutedBlock}>
+              <Text style={styles.bigMuted}>{Math.round(latest.displayScore)}점</Text>
+              <Text style={styles.bigMutedLabel}>측정 불충분 · 참고용</Text>
+            </View>
+          ) : (
+            <Text style={styles.big}>{Math.round(latest.displayScore)}점</Text>
+          )}
           <View style={styles.metricRow}>
             <Text style={styles.metricLabel}>원점수(rawScore)</Text>
             <Text style={styles.metricValue}>{latest.rawScore.toFixed(2)}</Text>
@@ -412,6 +424,11 @@ const styles = StyleSheet.create({
   },
   title: { fontSize: font.label, fontWeight: '800', color: palette.text },
   big: { fontSize: 52, fontWeight: '800', color: palette.skyDeep },
+  // FEAT-003 리뷰 후속: 측정 불충분 보행의 점수는 흐리게(muted) + 참고용 라벨로 표시한다.
+  // 큰 점수를 신뢰 가능한 결과처럼 강조하지 않기 위해 textFaint 톤과 참고용 캡션을 쓴다.
+  bigMutedBlock: { gap: spacing.xs },
+  bigMuted: { fontSize: 52, fontWeight: '800', color: palette.textFaint },
+  bigMutedLabel: { fontSize: font.small, fontWeight: '700', color: palette.textMuted },
   metricRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
   metricLabel: { fontSize: font.body, color: palette.textMuted },
   metricValue: { fontSize: font.body, color: palette.text, fontWeight: '700' },
