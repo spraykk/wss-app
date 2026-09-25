@@ -2,6 +2,7 @@
 // RN/Expo 런타임에서만 동작하며 샌드박스에서는 실행되지 않는다.
 import { useEffect, useState } from 'react';
 import { ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Link } from 'expo-router';
 import { loadHistory } from '../src/storage/history';
 import { fetchStats } from '../src/data/supabase';
 import type { WssStats } from '../src/data/supabase';
@@ -193,6 +194,10 @@ export default function ReportScreen() {
         )}
       </View>
 
+      <Link href="/feedback" asChild>
+        <Text style={styles.feedbackLink}>💬 의견 보내기</Text>
+      </Link>
+
       <View style={styles.disclaimerBox}>
         <Text style={styles.disclaimer}>
           WSS는 알려진 위험 요인(위치·날씨·시간대·청각·스마트폰 사용)을 종합한 참고
@@ -276,6 +281,18 @@ const styles = StyleSheet.create({
     overflow: 'hidden',
   },
   barFill: { height: 12, borderRadius: radius.pill },
+  feedbackLink: {
+    marginTop: spacing.md,
+    paddingVertical: spacing.lg,
+    borderRadius: radius.pill,
+    backgroundColor: palette.sky,
+    color: palette.skyDeep,
+    fontSize: font.label,
+    fontWeight: '800',
+    textAlign: 'center',
+    overflow: 'hidden',
+    ...shadow.button,
+  },
   disclaimerBox: {
     marginTop: spacing.lg,
     padding: spacing.lg,

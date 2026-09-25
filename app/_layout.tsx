@@ -58,6 +58,7 @@ export default function RootLayout() {
         <Stack.Screen name="index" options={{ title: '보행 개선' }} />
         <Stack.Screen name="map" options={{ title: '위험 지도' }} />
         <Stack.Screen name="report" options={{ title: 'WSS 리포트' }} />
+        <Stack.Screen name="feedback" options={{ title: '의견 보내기' }} />
         <Stack.Screen name="onboarding/index" options={{ headerShown: false }} />
         <Stack.Screen name="onboarding/permissions" options={{ headerShown: false }} />
       </Stack>

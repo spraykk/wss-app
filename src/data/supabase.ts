@@ -29,6 +29,22 @@ export interface WssStats {
   q3Score: number | null;
 }
 
+// 테스터 피드백 카테고리(스키마 check 제약과 동일한 4종).
+export type FeedbackCategory = 'bug' | 'suggestion' | 'praise' | 'etc';
+
+// 앱 피드백 화면이 서버로 올리는 페이로드. 위치/경로 등 민감정보는 포함하지 않는다.
+export interface FeedbackSubmission {
+  category: FeedbackCategory;
+  /** 1~5 별점. 선택 항목이라 미선택 시 null. */
+  rating: number | null;
+  /** 자유 텍스트(필수, 2000자 이하). */
+  message: string;
+  /** 앱 버전(예: "1.0.0"). 없으면 null. */
+  appVersion: string | null;
+  /** 익명 기기 UUID(src/storage/deviceId.ts 재사용). */
+  deviceId: string;
+}
+
 // env 또는 expo-constants.extra 에서 문자열 값을 읽는다(apiKey.ts 패턴 재사용).
 function readEnv(name: string): string | null {
   const fromEnv = process.env[name];
@@ -114,6 +130,45 @@ export async function uploadScore(payload: WssScoreUpload): Promise<boolean> {
       },
       { onConflict: 'device_id,date_iso' }
     );
+    return !error;
+  } catch {
+    return false;
+  }
+}
+
+// 테스터 피드백을 feedback 테이블에 insert 한다(uploadScore 와 동일한 안전 설계).
+// 성공하면 true, 미설정/오류/실패/유효성 위반이면 false 를 반환하되 예외를 던지지 않는다.
+// 유효성(카테고리 4종, 별점 1~5 또는 null, 메시지 비어있지 않고 2000자 이하)은
+// 클라이언트에서도 한 번 확인해 서버 왕복 없이 잘못된 값을 걸러낸다(서버 check 와 동일).
+export async function submitFeedback(payload: FeedbackSubmission): Promise<boolean> {
+  const validCategory =
+    payload.category === 'bug' ||
+    payload.category === 'suggestion' ||
+    payload.category === 'praise' ||
+    payload.category === 'etc';
+  const message = typeof payload.message === 'string' ? payload.message.trim() : '';
+  const validMessage = message.length > 0 && message.length <= 2000;
+  const validRating =
+    payload.rating === null ||
+    (Number.isInteger(payload.rating) && payload.rating >= 1 && payload.rating <= 5);
+  if (!validCategory || !validMessage || !validRating) return false;
+
+  const client = getClient() as
+    | {
+        from: (t: string) => {
+          insert: (row: Record<string, unknown>) => Promise<{ error: unknown }>;
+        };
+      }
+    | null;
+  if (!client) return false;
+  try {
+    const { error } = await client.from('feedback').insert({
+      device_id: payload.deviceId,
+      category: payload.category,
+      rating: payload.rating,
+      message,
+      app_version: payload.appVersion,
+    });
     return !error;
   } catch {
     return false;
