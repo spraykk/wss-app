@@ -1,11 +1,13 @@
-// computeWSS 의 "확인된 사용 시간 기반 감점" 전환 검증 (FEAT-002, Option A - Step 1)
+// computeWSS 의 "감지된 사용 시간(자세 기반) 기반 감점" 검증 (FEAT-003)
 // 실행: env -u NODE_OPTIONS node --experimental-strip-types scripts/verify-usage-wss.ts
 //
-// 검증 내용:
-//  (a) confirmedUseMinutes 가 있으면 그 값으로 감점(smartphoneUseMinutes 가 달라도 confirmed 가 이긴다).
+// 검증 내용(자세 기반 이분화 이후의 새 진실):
+//  (a) confirmedUseMinutes(감지된 사용)가 있으면 그 값으로 감점(smartphoneUseMinutes 가 달라도 이긴다).
 //  (b) 레거시 세그먼트(confirmed 없음, smartphoneUseMinutes 만) -> 예전 rawScore 를 그대로 재현(하위호환).
-//  (c) confirmed=0 이고 walk 전체가 unknown -> measurementInsufficient=true, 감점 없음(rawScore=100).
-//  (d) usageRatio 는 confirmed/walk 로 계산된다.
+//  (c) confirmed=0(전 구간 no-use) -> 감점 없음(rawScore=100), usageRatio=0.
+//  (d) usageRatio 는 use/walk 로 계산되고, >=0.3 이면 penalty 경로를 탄다.
+//  (e) WSSResult 는 더 이상 measurementInsufficient/unknownRatio 를 기록하지 않는다(undefined).
+//  (f) usageBands 는 use(confirmedUse)/no-use 만 채우고 estimated/unknown 은 0.
 //
 // 기대값은 하드코딩하지 않고 실증 가중치 + DEDUCTION_SCALE 로 코드에서 재계산한다
 // (verify-wss-example.ts 스타일). 코어 파일은 트랜스파일 훅으로 그대로 실행한다.
@@ -49,20 +51,27 @@ function baseSegment(overrides: Record<string, unknown>) {
   };
 }
 
-// (a) confirmedUseMinutes=M, smartphoneUseMinutes 는 일부러 다른 값 -> confirmed 로 감점.
+// (a) confirmedUseMinutes=M(감지된 사용), smartphoneUseMinutes 는 일부러 다른 값 -> confirmed 로 감점.
 {
   const M = 2;
-  const seg = baseSegment({ confirmedUseMinutes: M, smartphoneUseMinutes: 99 });
+  const seg = baseSegment({ confirmedUseMinutes: M, noUseMinutes: 98, smartphoneUseMinutes: 99 });
   const combined = computeSegmentWeight(seg).combined;
   const res = computeWSS([seg]);
-  // 감점은 confirmed(M) 로 계산되어야 한다(99 가 아님).
-  assertClose('(a) rawScore uses confirmed=M', res.rawScore, 100 - DEDUCTION_SCALE * combined * M);
-  // usageRatio = confirmed/walk = 2/100.
-  assertClose('(a) usageRatio = confirmed/walk', res.usageRatio, M / 100);
-  // 위험지역 + confirmed>0 -> 트리거 true.
+  // 감점은 detected use(M) 로 계산되어야 한다(99 가 아님).
+  assertClose('(a) rawScore uses detected use=M', res.rawScore, 100 - DEDUCTION_SCALE * combined * M);
+  // usageRatio = use/walk = 2/100.
+  assertClose('(a) usageRatio = use/walk', res.usageRatio, M / 100);
+  // 위험지역 + use>0 -> 트리거 true.
   assert('(a) enteredHighRiskZoneWhileUsingPhone true', res.enteredHighRiskZoneWhileUsingPhone === true);
-  // 밴드 집계에 confirmed=M 반영.
+  // 밴드 집계에 use=M 반영.
   assert('(a) usageBands.confirmedUseMinutes=M', res.usageBands !== undefined && res.usageBands.confirmedUseMinutes === M, `${res.usageBands?.confirmedUseMinutes}`);
+  // (e) 은퇴한 필드는 기록되지 않는다.
+  assert('(a) measurementInsufficient undefined', res.measurementInsufficient === undefined, `${res.measurementInsufficient}`);
+  assert('(a) unknownRatio undefined', res.unknownRatio === undefined, `${res.unknownRatio}`);
+  // (f) estimated/unknown 밴드는 0.
+  assert('(a) usageBands.estimatedUseMinutes=0', res.usageBands !== undefined && res.usageBands.estimatedUseMinutes === 0);
+  assert('(a) usageBands.unknownUseMinutes=0', res.usageBands !== undefined && res.usageBands.unknownUseMinutes === 0);
+  assert('(a) usageBands.noUseMinutes=98', res.usageBands !== undefined && res.usageBands.noUseMinutes === 98, `${res.usageBands?.noUseMinutes}`);
 }
 
 // (b) 레거시 세그먼트(confirmed 없음, smartphoneUseMinutes 만) -> 예전 rawScore 재현.
@@ -74,31 +83,32 @@ function baseSegment(overrides: Record<string, unknown>) {
   // 하위호환: 옛 공식 100 - k*combined*use 그대로.
   assertClose('(b) legacy rawScore == old formula', res.rawScore, 100 - DEDUCTION_SCALE * combined * use);
   assertClose('(b) legacy usageRatio = use/walk', res.usageRatio, use / 100);
-  // 레거시는 밴드 폴백으로 unknownUse 로 접힌다(감점 아님, 집계 표기용).
-  assert('(b) legacy folds into unknownUse', res.usageBands !== undefined && res.usageBands.unknownUseMinutes === use, `${res.usageBands?.unknownUseMinutes}`);
+  // 레거시는 밴드 폴백으로 no-use 로 접힌다(감점 아님, 집계 표기용). unknown 은 0.
+  assert('(b) legacy folds into noUse', res.usageBands !== undefined && res.usageBands.noUseMinutes === use, `${res.usageBands?.noUseMinutes}`);
+  assert('(b) legacy unknownUse=0', res.usageBands !== undefined && res.usageBands.unknownUseMinutes === 0);
+  assert('(b) measurementInsufficient undefined', res.measurementInsufficient === undefined);
 }
 
-// (c) confirmed=0, walk 전체가 unknown -> insufficient=true, 감점 없음(rawScore=100).
+// (c) confirmed=0(전 구간 no-use) -> 감점 없음(rawScore=100), usageRatio=0.
 {
-  const seg = baseSegment({ confirmedUseMinutes: 0, unknownUseMinutes: 100, walkMinutes: 100, smartphoneUseMinutes: 0 });
+  const seg = baseSegment({ confirmedUseMinutes: 0, noUseMinutes: 100, walkMinutes: 100, smartphoneUseMinutes: 0 });
   const res = computeWSS([seg]);
-  assertClose('(c) no confirmed -> rawScore=100 (no deduction)', res.rawScore, 100);
-  assert('(c) measurementInsufficient=true', res.measurementInsufficient === true);
-  assertClose('(c) unknownRatio = 100/100 = 1', res.unknownRatio ?? -1, 1);
+  assertClose('(c) no use -> rawScore=100 (no deduction)', res.rawScore, 100);
   assertClose('(c) usageRatio = 0', res.usageRatio, 0);
-  assert('(c) not entering risk-zone-use (confirmed=0)', res.enteredHighRiskZoneWhileUsingPhone === false);
+  assert('(c) not entering risk-zone-use (use=0)', res.enteredHighRiskZoneWhileUsingPhone === false);
+  assert('(c) measurementInsufficient undefined', res.measurementInsufficient === undefined);
+  assert('(c) unknownRatio undefined', res.unknownRatio === undefined);
 }
 
-// (d) 혼합: confirmed 우세, unknown 낮음 -> sufficient(false), usageRatio=confirmed/walk.
+// (d) usageRatio>=0.3 -> penalty 경로. use=9, walk=10.
 {
-  const seg = baseSegment({ confirmedUseMinutes: 9, unknownUseMinutes: 1, walkMinutes: 10, smartphoneUseMinutes: 9 });
+  const seg = baseSegment({ confirmedUseMinutes: 9, noUseMinutes: 1, walkMinutes: 10, smartphoneUseMinutes: 9 });
   const combined = computeSegmentWeight(seg).combined;
   const res = computeWSS([seg]);
   assertClose('(d) usageRatio = 9/10', res.usageRatio, 9 / 10);
-  assert('(d) measurementInsufficient=false (low unknown)', res.measurementInsufficient === false, `ratio=${res.unknownRatio}`);
   // usageRatio(0.9) >= 0.3 이므로 displayScore 는 penalty 경로를 타고 rawScore 이하여야 한다.
   const raw = 100 - DEDUCTION_SCALE * combined * 9;
-  assertClose('(d) rawScore uses confirmed=9', res.rawScore, Math.max(0, Math.min(100, raw)));
+  assertClose('(d) rawScore uses use=9', res.rawScore, Math.max(0, Math.min(100, raw)));
   assert('(d) displayScore <= rawScore (penalty applied)', res.displayScore <= res.rawScore, `disp=${res.displayScore} raw=${res.rawScore}`);
 }
 

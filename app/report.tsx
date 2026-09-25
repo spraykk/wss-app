@@ -154,19 +154,11 @@ export default function ReportScreen() {
       {latest ? (
         <View style={styles.card}>
           <Text style={styles.title}>최근 보행 결과</Text>
-          {/* FEAT-003 리뷰 후속(정직성): 측정이 불충분한 보행에서는 큰 점수를 "정상적으로
-              신뢰할 수 있는 결과"처럼 크게 보여주지 않는다. measurementInsufficient 가 true 면
-              점수를 흐리게(muted) 표시하고 "측정 불충분 · 참고용" 라벨을 붙여, 아래의
-              '측정 불충분' 안내 카드와 톤을 일치시킨다. 이 필드가 없는 과거 이력 행
-              (=== true 가 아님)은 예전처럼 큰 점수를 그대로 보여준다. */}
-          {latest.measurementInsufficient === true ? (
-            <View style={styles.bigMutedBlock}>
-              <Text style={styles.bigMuted}>{Math.round(latest.displayScore)}점</Text>
-              <Text style={styles.bigMutedLabel}>측정 불충분 · 참고용</Text>
-            </View>
-          ) : (
-            <Text style={styles.big}>{Math.round(latest.displayScore)}점</Text>
-          )}
+          {/* FEAT-003: 사용 판정이 자세 기반으로 바뀌면서 모든 구간이 use/no-use 로 이분되어
+              '측정 불충분' 개념은 은퇴했다. 점수는 항상 그대로 보여준다. 옛 이력 행이 여전히
+              measurementInsufficient 를 가질 수 있으나 더 이상 표시에 사용하지 않는다(가드 불필요,
+              단순히 읽지 않음). */}
+          <Text style={styles.big}>{Math.round(latest.displayScore)}점</Text>
           <View style={styles.metricRow}>
             <Text style={styles.metricLabel}>원점수(rawScore)</Text>
             <Text style={styles.metricValue}>{latest.rawScore.toFixed(2)}</Text>
@@ -196,41 +188,6 @@ export default function ReportScreen() {
           <Text style={styles.empty}>저장된 보행 이력이 없습니다.</Text>
         </View>
       )}
-
-      {/* FEAT-003 (Option A - Step 1): '측정 불충분' 정직성 안내.
-          latest.measurementInsufficient 가 true 일 때만 렌더한다. 모든 읽기는 null/undefined
-          가드를 두어, 이 필드가 없는 과거 이력 행은 예전과 완전히 동일하게 렌더된다. */}
-      {latest && latest.measurementInsufficient === true ? (
-        <View style={styles.insufficientCard}>
-          <Text style={styles.insufficientTitle}>⚠️ 측정 불충분</Text>
-          <Text style={styles.insufficientBody}>
-            이번 보행의 상당 부분을 관측하지 못했어요(앱이 백그라운드였거나 화면과의
-            상호작용이 확인되지 않은 시간). 관측하지 못한 시간은 "안전하게 걸었다"고 단정하지
-            않으므로, 이 점수는 불완전할 수 있어요.
-          </Text>
-          {typeof latest.unknownRatio === 'number' && Number.isFinite(latest.unknownRatio) ? (
-            <Text style={styles.insufficientMeta}>
-              미관측 비율 약 {Math.round(latest.unknownRatio * 100)}%
-            </Text>
-          ) : null}
-          {latest.usageBands ? (
-            <View style={styles.bandBreakdown}>
-              <Text style={styles.bandRow}>
-                확인된 사용 {Math.round(latest.usageBands.confirmedUseMinutes)}분
-              </Text>
-              <Text style={styles.bandRow}>
-                추정 사용(감점 안 함) {Math.round(latest.usageBands.estimatedUseMinutes)}분
-              </Text>
-              <Text style={styles.bandRow}>
-                미관측 {Math.round(latest.usageBands.unknownUseMinutes)}분
-              </Text>
-              <Text style={styles.bandRow}>
-                미사용 {Math.round(latest.usageBands.noUseMinutes)}분
-              </Text>
-            </View>
-          ) : null}
-        </View>
-      ) : null}
 
       <View style={styles.card}>
         <Text style={styles.title}>주간 일별 점수</Text>
@@ -430,11 +387,6 @@ const styles = StyleSheet.create({
   },
   title: { fontSize: font.label, fontWeight: '800', color: palette.text },
   big: { fontSize: 52, fontWeight: '800', color: palette.skyDeep },
-  // FEAT-003 리뷰 후속: 측정 불충분 보행의 점수는 흐리게(muted) + 참고용 라벨로 표시한다.
-  // 큰 점수를 신뢰 가능한 결과처럼 강조하지 않기 위해 textFaint 톤과 참고용 캡션을 쓴다.
-  bigMutedBlock: { gap: spacing.xs },
-  bigMuted: { fontSize: 52, fontWeight: '800', color: palette.textFaint },
-  bigMutedLabel: { fontSize: font.small, fontWeight: '700', color: palette.textMuted },
   metricRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
   metricLabel: { fontSize: font.body, color: palette.textMuted },
   metricValue: { fontSize: font.body, color: palette.text, fontWeight: '700' },
@@ -532,17 +484,4 @@ const styles = StyleSheet.create({
   },
   feedbackTitle: { fontSize: font.subtitle, fontWeight: '800' },
   feedbackMessage: { fontSize: font.body, lineHeight: 22, fontWeight: '600' },
-  // FEAT-003: '측정 불충분' 안내 카드(주의 톤). 기존 스타일 토큰만 사용.
-  insufficientCard: {
-    padding: spacing.lg,
-    borderRadius: radius.md,
-    backgroundColor: palette.cautionBg,
-    gap: spacing.xs,
-    ...shadow.card,
-  },
-  insufficientTitle: { fontSize: font.subtitle, fontWeight: '800', color: palette.cautionText },
-  insufficientBody: { fontSize: font.body, lineHeight: 22, color: palette.cautionText },
-  insufficientMeta: { fontSize: font.small, fontWeight: '700', color: palette.cautionText, marginTop: spacing.xs },
-  bandBreakdown: { marginTop: spacing.sm, gap: spacing.xs },
-  bandRow: { fontSize: font.small, color: palette.cautionText },
 });

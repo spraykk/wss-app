@@ -28,17 +28,20 @@ export interface WalkSegment {
    * 값은 isEarEffectivelyOccluded({bluetoothAudioRouteConnected, otherAudioPlaying})
    * = (둘 다 true) 에서 채워진다. EAR_WEIGHT(occluded=1.3/open=1.0) 매핑에 연결된다. */
   isEarOccluded: boolean;
-  // --- Option A (Step 1) 증거 밴드별 분(minute). 모두 선택 필드(하위호환) ---
+  // --- 사용 밴드별 분(minute). 모두 선택 필드(하위호환) ---
   // smartphoneUseMinutes 는 하위호환을 위해 유지되며, 새 채점은 confirmedUseMinutes 를 읽는다.
-  // 밴드 필드가 없는 과거 세그먼트는 aggregateUsageBands 에서 레거시 폴백(unknownUse)으로 처리된다.
-  // 밴드 분류 근거/규칙은 src/session/usageClassification.ts 참고.
-  /** [확인] 실제 인앱 터치/스크롤로 확인된 사용 시간(분). 새 채점의 감점 소스. */
+  // FEAT-003: 사용 판정 소스가 인앱 터치 -> 자세(보행 중 화면 보기: pitch>=10deg 3초 지속)로
+  // 바뀌면서 모든 구간이 use/no-use 로 이분된다. estimatedUse/unknownUse 는 은퇴했다(항상 0으로
+  // 기록되거나 미기록). 밴드 필드가 없는 과거 세그먼트는 confirmedUseMinutesOf 폴백으로
+  // smartphoneUseMinutes 를 사용한다. 판정/집계 규칙은 src/session/usageClassification.ts 및
+  // src/sensors/postureUsageDetector.ts 참고.
+  /** [사용] 자세(보행 중 화면 보기)로 감지된 사용 시간(분). 새 채점의 감점 소스. */
   confirmedUseMinutes?: number;
-  /** [추정] 자세 추정 기반 사용 시간(분). Step 1 에서는 항상 0(감점 안 함, 향후 과제). */
+  /** [은퇴] 예전 자세-추정 밴드. FEAT-003 이후 기록하지 않으며 항상 0(옛 이력 호환용 필드). */
   estimatedUseMinutes?: number;
-  /** [미관측] 백그라운드/센서 stale/무신호로 관측 불가한 시간(분). 감점 아님, 충분성 판정에 사용. */
+  /** [은퇴] 예전 미관측 밴드. FEAT-003 이후 기록하지 않으며 항상 0(옛 이력 호환용 필드). */
   unknownUseMinutes?: number;
-  /** [무사용] 사용 안 함으로 볼 수 있는 시간(분). Step 1 에서는 보수적으로 0(unknownUse 로 접음). */
+  /** [미사용] 사용(자세)으로 확정되지 않은 시간(분). 감점 대상 아님. */
   noUseMinutes?: number;
 }
 
@@ -63,14 +66,16 @@ export interface WSSResult {
   /** WSS_critical 미만 여부 (보고서 임계점 60 기준, 알림/위험표시 등 트리거) */
   belowCriticalThreshold: boolean;
   segmentBreakdown: Array<{ regionId: string; weight: WeightBreakdown; contribution: number }>;
-  // --- Option A (Step 1) 증거 밴드 집계 + 관측 충분성. 모두 선택 필드(하위호환) ---
-  /** 네 증거 밴드(confirmed/estimated/unknown/noUse)의 분(minute) 합계.
-   * aggregateUsageBands(segments) 로 채운다. 밴드 필드 없는 레거시 세그먼트는 unknownUse 로 폴백. */
+  // --- 사용 밴드 집계. 모두 선택 필드(하위호환) ---
+  /** 사용 밴드의 분(minute) 합계. FEAT-003 이후 usageBandsFromSegments(segments) 로 채우며
+   * confirmedUseMinutes(사용)/noUseMinutes(미사용)만 채워지고 estimated/unknown 은 항상 0 이다.
+   * 밴드 필드 없는 레거시 세그먼트는 smartphoneUseMinutes 를 no-use 로 접어 집계한다. */
   usageBands?: UsageBands;
-  /** 미관측(unknown) 시간 / 총 보행 시간. 관측을 얼마나 못 했는지의 정직한 지표. */
+  /** [은퇴] 예전 '측정 불충분' 지표(미관측 시간/총 보행). FEAT-003 이후 더 이상 기록하지 않는다.
+   * 옛 이력 행과의 하위호환을 위해 선택 필드로만 남겨둔다(리포트는 가드해 읽는다). */
   unknownRatio?: number;
-  /** 관측 불충분 여부(보행 없음 또는 unknownRatio >= UNKNOWN_RATIO_INSUFFICIENT_THRESHOLD).
-   * true 면 리포트에서 '측정 불충분'을 표시하고 관측 못 한 시간에 좋은 점수를 주지 않는다(정직성). */
+  /** [은퇴] 예전 '측정 불충분' 여부. FEAT-003 이후 더 이상 기록하지 않는다(자세 기반 이분화로
+   * 모든 구간이 use/no-use 로 분류되어 '측정 불충분' 개념이 사라짐). 옛 이력 행 호환용 선택 필드. */
   measurementInsufficient?: boolean;
   /** 보행이 끝난 로컬 날짜(yyyy-mm-dd). 저장 시점(stop)에 toDateISO(new Date())로 채운다
    * (업로드에 쓰는 date_iso 와 동일 값). 주간 일별 막대그래프 집계용.

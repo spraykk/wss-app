@@ -35,6 +35,8 @@ import type { ActiveSession } from '../session/sessionStore';
 import {
   makeGeofenceSessionCallbacks,
   resetSessionTaskState,
+  startPostureSensors,
+  stopPostureSensors,
 } from '../session/backgroundTask';
 // FEAT-003: 세션 간 인앱 상호작용 증거가 새지 않도록 start()/stop() 에서 초기화한다.
 import { resetInteractions } from '../session/interactionTracker';
@@ -126,6 +128,10 @@ export function useWalkSession(): UseWalkSession {
     };
     resetSessionTaskState();
     resetInteractions();
+    // FEAT-003: 세션 동안 자세(pitch) 센서를 구독해 "보행 중 화면 보기" 사용을 감지한다.
+    // UIBackgroundModes:location 로 프로세스가 살아있는 동안 읽힌다(iOS 백그라운드 연속성은
+    // 보장 불가 - backgroundTask.startPostureSensors 주석 참고). 실패해도 세션 시작을 깨지 않는다.
+    startPostureSensors();
     await saveActiveSession(startedSession);
     if (isMountedRef.current) setSession(startedSession);
 
@@ -153,6 +159,8 @@ export function useWalkSession(): UseWalkSession {
   const stop = useCallback(async (): Promise<void> => {
     // 지오펜스/정밀 추적 해제.
     await stopGeofencing();
+    // FEAT-003: 자세 센서 구독 해제(세션 종료). resetSessionTaskState 는 지속 상태를 리셋한다.
+    stopPostureSensors();
     resetSessionTaskState();
     resetInteractions();
 

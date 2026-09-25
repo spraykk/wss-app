@@ -18,9 +18,9 @@
 //
 // TaskManager.defineTask 는 Expo 요구상 모듈 전역 스코프에서 등록되어야 하며, 앱이
 // 이 모듈을 import 하는 것(app/_layout.tsx)만으로 등록된다.
-import { AppState } from 'react-native';
 import * as Location from 'expo-location';
 import * as TaskManager from 'expo-task-manager';
+import { Accelerometer, DeviceMotion } from 'expo-sensors';
 import type { AccidentZone } from '../types';
 import { loadAccidentZones, findEnclosingZones } from '../data/accidentZones';
 import { computeRiskIntensity } from '../wss/weights';
@@ -37,7 +37,12 @@ import { readAudioEnvironmentSnapshot } from '../sensors/useAudioEnvironment';
 import { isEarEffectivelyOccluded } from '../sensors/audioState';
 import { classifyMotion, createInitialMotionState } from '../sensors/motionClassifier';
 import type { MotionState } from '../sensors/motionClassifier';
-import { classifyInterval } from './usageClassification';
+import { gravityToPitchRoll } from '../sensors/postureMath';
+import {
+  createInitialPostureUsageState,
+  classifyPostureInterval,
+} from '../sensors/postureUsageDetector';
+import type { PostureUsageState } from '../sensors/postureUsageDetector';
 import { hadRecentInteraction } from './interactionTracker';
 
 // 세션 파이프라인 백그라운드 태스크 이름. TaskManager.defineTask 는 모듈 로드 시 1회만
@@ -68,6 +73,106 @@ function gridForLocation(latitude: number, longitude: number): { nx: number; ny:
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// 자세(스마트폰 사용) 감지용 모듈 스코프 상태 (FEAT-003) - RN 런타임 전용.
+//
+// 배경: 사용(보행 중 화면 보기) 판정은 자세(pitch)를 근거로 한다. 파이프라인은 이벤트 기반
+// (setInterval 금지)이므로, 위치 이벤트가 오는 "그 순간"의 최신 자세를 알아야 한다. 그래서
+// 세션 동안 DeviceMotion(중력 포함 가속도) 또는 Accelerometer 를 구독해 최신 pitch 를 모듈
+// 스코프에 계속 갱신해 두고, processLocationSample 이 그 값을 읽어 classifyPostureInterval 로
+// 이 구간을 use/no-use 로 이분한다.
+//
+// [iOS 백그라운드 연속성 한계 · 온디바이스 검증 항목] UIBackgroundModes:location 으로 프로세스가
+// 살아있는 동안 모션 센서를 읽을 수 있지만, iOS 는 백그라운드에서 프로세스를 언제든 종료할 수
+// 있고 백그라운드 모션 연속성을 코드로 보장하지 못한다. 프로세스가 잠들거나 종료되면 자세
+// 샘플이 오지 않고, 그 공백은 아래 staleness 판정으로 no-use 로 귀속된다(감점 뻥튀기 없음).
+// 이 동작은 실기기에서 검증해야 하는 항목이다(샌드박스 실행 불가).
+
+// 자세 샘플 신선도 임계(ms). 마지막 자세 샘플이 이보다 오래되면 "센서 공백"으로 보아 no-use.
+// posture-lab 의 UPDATE_INTERVAL_MS(200ms)보다 넉넉히 크게 잡아, 정상 스트리밍은 신선으로,
+// 프로세스 잠듦/종료로 인한 실제 공백만 stale 로 판정한다. 설계값(튜닝 가능).
+const POSTURE_SAMPLE_STALE_MS = 5000;
+
+// 자세 센서 업데이트 간격(ms). posture-lab 화면과 동일한 200ms.
+const POSTURE_UPDATE_INTERVAL_MS = 200;
+
+// 최신 자세 샘플(pitch 도 + 관측 시각 ms). 아직 없으면 null(=> no-use).
+let latestPitchSample: { pitchDeg: number; atMs: number } | null = null;
+
+// 자세 사용 감지 지속 상태(순수 상태기계 postureUsageDetector 의 상태).
+let postureUsageState: PostureUsageState = createInitialPostureUsageState();
+
+// 자세 센서 구독 핸들(세션 동안 유지, 종료 시 해제).
+let postureMotionSub: { remove: () => void } | null = null;
+let postureAccelSub: { remove: () => void } | null = null;
+let postureUsingAccel = false;
+
+// 세션 시작 시 호출: DeviceMotion(중력 포함 가속도)을 우선 구독하고, 중력 성분이 없으면
+// Accelerometer 로 폴백한다(posture-lab.tsx 와 동일한 패턴). 최신 pitch 를 모듈 스코프에 갱신한다.
+// 이미 구독 중이면 중복 구독하지 않는다. RN 런타임 전용(샌드박스 실행 불가).
+export function startPostureSensors(): void {
+  if (postureMotionSub !== null || postureAccelSub !== null) return;
+
+  const applyGravity = (x: number, y: number, z: number): void => {
+    const pr = gravityToPitchRoll({ x, y, z });
+    latestPitchSample = { pitchDeg: pr.pitchDeg, atMs: Date.now() };
+  };
+
+  const startAccel = (): void => {
+    if (postureUsingAccel) return;
+    postureUsingAccel = true;
+    Accelerometer.setUpdateInterval(POSTURE_UPDATE_INTERVAL_MS);
+    postureAccelSub = Accelerometer.addListener(({ x, y, z }) => {
+      // Accelerometer 는 정지 시 중력을 g 단위로 x/y/z 에 담는다.
+      applyGravity(x, y, z);
+    });
+  };
+
+  try {
+    DeviceMotion.setUpdateInterval(POSTURE_UPDATE_INTERVAL_MS);
+    postureMotionSub = DeviceMotion.addListener((data) => {
+      const gravity = data?.accelerationIncludingGravity;
+      if (
+        gravity &&
+        typeof gravity.x === 'number' &&
+        typeof gravity.y === 'number' &&
+        typeof gravity.z === 'number'
+      ) {
+        applyGravity(gravity.x, gravity.y, gravity.z);
+      } else if (!postureUsingAccel) {
+        // DeviceMotion 이 중력 성분을 주지 못하면 Accelerometer 로 폴백.
+        startAccel();
+      }
+    });
+  } catch {
+    // DeviceMotion 미지원/실패 -> Accelerometer 폴백 시도(그것도 실패하면 자세 샘플 없음 => no-use).
+    try {
+      startAccel();
+    } catch {
+      // 센서 전혀 불가: latestPitchSample 은 null 로 남아 모든 구간이 no-use(정직/보수적).
+    }
+  }
+}
+
+// 세션 종료 시 호출: 자세 센서 구독을 해제하고 상태를 리셋한다.
+export function stopPostureSensors(): void {
+  try {
+    postureMotionSub?.remove();
+  } catch {
+    // 무시(해제 실패가 종료 흐름을 깨지 않도록).
+  }
+  try {
+    postureAccelSub?.remove();
+  } catch {
+    // 무시.
+  }
+  postureMotionSub = null;
+  postureAccelSub = null;
+  postureUsingAccel = false;
+  latestPitchSample = null;
+  postureUsageState = createInitialPostureUsageState();
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // 한 개의 위치 샘플을 세션 파이프라인에 통과시키는 공용 처리기.
 // 지오펜스 ENTER 콜백과 백그라운드 위치 업데이트 태스크가 공유한다(이벤트 기반).
 // ─────────────────────────────────────────────────────────────────────────────
@@ -75,7 +180,11 @@ export async function processLocationSample(
   latitude: number,
   longitude: number,
   elapsedMinutes: number,
-  now: Date = new Date()
+  now: Date = new Date(),
+  // 이 구간이 "진짜 보행" 구간인지. 차량 구간은 상위(shouldSkipAsVehicle)에서 이미 스킵되므로
+  // 여기 도달한 위치 샘플은 기본적으로 보행으로 본다. 자세 기반 '사용'은 walking=true 일 때만
+  // 인정한다(차량/정지 중 화면 보기는 사용으로 감점하지 않음). 호출부가 보행 신호를 넘긴다.
+  walking: boolean = true
 ): Promise<void> {
   const session = await loadActiveSession();
   // 추적 중이 아니면(사용자가 stop 했거나 미시작) 아무 것도 하지 않는다.
@@ -106,38 +215,63 @@ export async function processLocationSample(
   const isEarOccluded = isEarEffectivelyOccluded(audioEnv);
   const timeBand = getCurrentTimeBand(now);
 
-  // 스마트폰 사용 시간(증거 기반 분류 - Option A Step 1). 예전에는 경과 보행시간 전체를
-  // 곧바로 smartphoneUseMinutes 로 취급했다("활성 세션 = 사용자가 앱/화면을 보는 중일 것"
-  // 이라는 가정). 이는 주머니에 넣고 걸어도 전 구간이 사용으로 감점되는 근본 오류였다.
-  // 이제는 이 구간의 "증거"를 모아 classifyInterval 로 정확히 하나의 밴드로 분류한다:
-  //  - appForeground: 앱이 포그라운드('active')인가. 백그라운드면 화면/타앱 사용을 관측 불가.
-  //  - hadRecentInteraction: 확인 창 안에 실제 인앱 터치/스크롤이 있었는가(유일한 확인 증거).
-  //  - sensorStale: Step 1 에서는 항상 false. (센서 staleness 훅은 이후 단계에서 배선한다.)
-  // 정직성 한계: confirmedUse 는 본질적으로 "포그라운드 인앱 상호작용" 시간이다. 백그라운드
-  // 구간은 AppState 가 'active' 가 아니므로 unknownUse 로 분류된다(올바른 정직한 동작).
-  // 또한 estimatedUse(자세 추정)는 Step 1 에서 감점하지 않는다(별도 향후 과제 - Step 2).
-  const appForeground = AppState.currentState === 'active';
-  const bands = classifyInterval(
+  // 스마트폰 사용 시간(자세 기반 판정 - FEAT-003). 예전에는 경과 보행시간 전체를 곧바로
+  // smartphoneUseMinutes 로 취급했고(주머니에 넣고 걸어도 전 구간 감점되던 근본 오류), 그 뒤
+  // Option A(Step 1)에서는 인앱 터치만 confirmedUse 로 인정하고 나머지를 unknownUse 로 두었다.
+  // 이제 사용 판정의 소스를 "자세(보행 중 화면 보기)"로 바꾼다: 모듈 스코프에 유지되는 최신
+  // pitch(도)와 지속 상태(postureUsageState)를 classifyPostureInterval 에 넣어 이 구간의 경과분을
+  // use/no-use 로 이분한다. 사용 인정 조건은 walking=true 이며 pitch>=10deg 를 3초 이상 지속
+  // (postureUsageDetector 의 실측 기반 설계값)일 때뿐이다.
+  //
+  // [센서 공백 => no-use] 최신 자세 샘플이 아직 없거나(구독 직후) 신선하지 않으면 보수적으로
+  // no-use 로 귀속한다("모르면 사용으로 감점하지 않는다", 사용자 결정 '가'). latestPitchSample
+  // 이 null 이면 walking=false 로 넘겨 지속을 끊고 전 구간을 no-use 로 만든다.
+  //
+  // [정직성 · 확정 인앱 터치 OR-in] 자세 신호와 별개로, 확인 창 안의 실제 인앱 터치가 있었던
+  // 구간은 (걷는 중이라면) "확실한 사용"이므로 use 로 함께 인정한다(설계 선택). 이는 자세를
+  // 놓치더라도 명백한 사용을 반영하기 위한 보수적 OR 이며, 포그라운드 인앱 상호작용만 관측
+  // 가능하다는 한계는 그대로다(interactionTracker 주석 참고).
+  //
+  // [iOS 백그라운드 연속성 한계 · 온디바이스 검증 항목] UIBackgroundModes:location 로 프로세스가
+  // 살아있는 동안 DeviceMotion/Accelerometer 를 읽지만, iOS 는 백그라운드에서 프로세스를 언제든
+  // 종료할 수 있고 백그라운드 모션 연속성을 코드로 보장할 수 없다. 종료/중단된 구간은 샘플이
+  // 오지 않아 자연히 no-use 로 귀속된다(감점 뻥튀기 없음). 이 한계는 실기기에서 검증할 항목이다.
+  const nowMs = now.getTime();
+  const posture = latestPitchSample;
+  const postureFresh =
+    posture !== null && Number.isFinite(posture.atMs) && nowMs - posture.atMs <= POSTURE_SAMPLE_STALE_MS;
+  const postureUse = classifyPostureInterval(
+    postureUsageState,
     {
-      appForeground,
-      hadRecentInteraction: hadRecentInteraction(now.getTime()),
-      sensorStale: false, // Step 1: 센서 staleness 는 아직 배선하지 않음(이후 단계).
+      pitchDeg: postureFresh ? posture.pitchDeg : 0,
+      // 신선한 자세 샘플이 없으면 walking=false 로 넘겨 지속을 끊고 no-use 로 만든다.
+      walking: walking && postureFresh,
+      nowMs,
     },
     elapsedMinutes
   );
+  postureUsageState = postureUse.next;
+
+  // 확정 인앱 터치 OR-in: 걷는 중 최근 인앱 상호작용이 있었으면 그 구간도 use 로 인정한다.
+  const minutes = Number.isFinite(elapsedMinutes) && elapsedMinutes > 0 ? elapsedMinutes : 0;
+  const touchUse = walking && hadRecentInteraction(nowMs);
+  const useMinutes = touchUse ? minutes : postureUse.useMinutes;
+  const noUseMinutes = minutes - useMinutes;
+
   const sample: WalkContextSample = {
     zoneId,
     riskIntensity,
     weather,
     isEarOccluded,
-    // 레거시 소비자/reduce 누적 호환을 위해 smartphoneUseMinutes 는 confirmedUse 를 미러링한다.
-    smartphoneUseMinutes: bands.confirmedUseMinutes,
+    // 레거시 소비자/reduce 누적 호환을 위해 smartphoneUseMinutes 는 감지된 사용분을 미러링한다.
+    smartphoneUseMinutes: useMinutes,
     walkMinutes: elapsedMinutes,
     timeBand,
-    confirmedUseMinutes: bands.confirmedUseMinutes,
-    estimatedUseMinutes: bands.estimatedUseMinutes,
-    unknownUseMinutes: bands.unknownUseMinutes,
-    noUseMinutes: bands.noUseMinutes,
+    // 자세 기반 이분화: confirmedUse=감지된 사용, noUse=그 외. estimated/unknown 은 은퇴(0).
+    confirmedUseMinutes: useMinutes,
+    estimatedUseMinutes: 0,
+    unknownUseMinutes: 0,
+    noUseMinutes,
   };
 
   // 4) 순수 리듀서로 누적 -> 지속.
@@ -218,11 +352,14 @@ TaskManager.defineTask(SESSION_LOCATION_TASK_NAME, async ({ data, error }) => {
   const elapsedMinutes = lastProcessedAt ? Math.max(0, (nowMs - lastProcessedAt) / 60000) : 0;
   lastProcessedAt = nowMs;
 
+  // 여기 도달한 샘플은 shouldSkipAsVehicle 로 차량이 아님이 이미 걸러졌으므로 walking=true 로
+  // 넘긴다(차량 구간은 위에서 return 되어 자세 '사용'으로 감점되지 않는다 - FEAT-003 step3).
   await processLocationSample(
     latest.coords.latitude,
     latest.coords.longitude,
     elapsedMinutes,
-    new Date(nowMs)
+    new Date(nowMs),
+    true
   );
 });
 
@@ -243,11 +380,13 @@ export function makeGeofenceSessionCallbacks(): {
     }
     const elapsedMinutes = lastProcessedAt ? Math.max(0, (nowMs - lastProcessedAt) / 60000) : 0;
     lastProcessedAt = nowMs;
+    // 차량 구간은 위에서 이미 걸러졌으므로 walking=true(자세 '사용'은 보행 중에만 인정 - step3).
     void processLocationSample(
       sample.coords.latitude,
       sample.coords.longitude,
       elapsedMinutes,
-      new Date(nowMs)
+      new Date(nowMs),
+      true
     );
   };
   return {
@@ -261,8 +400,12 @@ export function makeGeofenceSessionCallbacks(): {
 }
 
 // 백그라운드 처리기 상태를 리셋한다(세션 종료 시 호출).
+// 자세 지속 상태/최신 샘플도 함께 리셋한다(세션 간 자세 증거가 새지 않도록). 센서 구독 자체의
+// 해제는 stopPostureSensors 가 담당한다(useWalkSession.stop 에서 호출).
 export function resetSessionTaskState(): void {
   lastProcessedAt = null;
   motionState = createInitialMotionState();
   lastCriticalScoreAlertAt = null;
+  latestPitchSample = null;
+  postureUsageState = createInitialPostureUsageState();
 }
