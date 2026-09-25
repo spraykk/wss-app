@@ -36,7 +36,11 @@ import {
   makeGeofenceSessionCallbacks,
   resetSessionTaskState,
 } from '../session/backgroundTask';
-import { requestNotificationPermission } from '../notifications/alerts';
+import {
+  requestNotificationPermission,
+  presentTrackingNotification,
+  dismissTrackingNotification,
+} from '../notifications/alerts';
 import { saveResult } from '../storage/history';
 
 // WalkContextSample 계약은 순수 리듀서 모듈에 단일 소스로 둔다(중복 정의 제거).
@@ -63,10 +67,23 @@ export function useWalkSession(): UseWalkSession {
     if (isMountedRef.current) setSession(loaded);
   }, []);
 
-  // 마운트 시(=앱 재실행 포함) active 세션을 복원하고, 추적 중이면 주기적으로 VIEW 갱신.
+  // 마운트 시(=앱 재실행 포함) active 세션을 복원한다. 진행 중 세션이면 "측정 중"
+  // 지속 알림을 다시 띄우고(고정 식별자라 중복 무해), 세션이 없으면 남아 있을 수 있는
+  // 알림을 정리한다. 알림은 UI 표시용이라 실패해도 세션 복원을 깨지 않는다.
+  const restore = useCallback(async (): Promise<void> => {
+    const loaded = await loadActiveSession();
+    if (isMountedRef.current) setSession(loaded);
+    if (loaded.isTracking) {
+      await presentTrackingNotification().catch(() => {});
+    } else {
+      await dismissTrackingNotification().catch(() => {});
+    }
+  }, []);
+
+  // 마운트 시 active 세션을 복원하고, 이후에는 주기적으로 VIEW 만 갱신한다.
   useEffect(() => {
     isMountedRef.current = true;
-    void refresh();
+    void restore();
     const timer = setInterval(() => {
       void refresh();
     }, VIEW_REFRESH_MS);
@@ -74,7 +91,7 @@ export function useWalkSession(): UseWalkSession {
       isMountedRef.current = false;
       clearInterval(timer);
     };
-  }, [refresh]);
+  }, [refresh, restore]);
 
   const start = useCallback(async (): Promise<void> => {
     // 권한: 백그라운드 측정을 위해 위치(가능하면 Always) + 알림 권한을 요청한다.
@@ -98,6 +115,10 @@ export function useWalkSession(): UseWalkSession {
     await saveActiveSession(startedSession);
     if (isMountedRef.current) setSession(startedSession);
 
+    // 앱을 닫아도 상단에 "측정 중" 지속 알림이 유지되도록 표시한다.
+    // 알림 표시 실패가 세션 시작을 깨지 않도록 삼킨다.
+    void presentTrackingNotification().catch(() => {});
+
     // 현재 위치 기준 근접 위험구역에 지오펜스를 등록하고, 백그라운드 세션 콜백을 연결한다.
     // 콜백/지오펜스는 이벤트 기반(region ENTER / 정밀 위치)이며 타이머를 쓰지 않는다.
     try {
@@ -119,6 +140,9 @@ export function useWalkSession(): UseWalkSession {
     // 지오펜스/정밀 추적 해제.
     await stopGeofencing();
     resetSessionTaskState();
+
+    // "측정 중" 지속 알림을 제거한다(실패해도 종료 흐름을 막지 않는다).
+    void dismissTrackingNotification().catch(() => {});
 
     // 최종 세션을 읽어 WSS 결과를 history 에 저장.
     const finalSession = await loadActiveSession();

@@ -10,6 +10,8 @@ import '../src/session/backgroundTask';
 import '../src/sensors/geofenceController';
 // FEAT-006: 최초 실행 시 단계적 권한 온보딩으로 유도한다(완료 후 스킵).
 import { isOnboardingComplete } from '../src/storage/onboarding';
+// 보행 세션용 "측정 중" 지속 알림의 Android 채널을 앱 시작 시 1회 준비한다(iOS 무해).
+import { ensureTrackingChannel } from '../src/notifications/alerts';
 
 export default function RootLayout() {
   // onboardingDone: null=조회중, true/false=결과. 조회 완료 전에는 리다이렉트하지 않는다.
@@ -19,6 +21,8 @@ export default function RootLayout() {
 
   useEffect(() => {
     let mounted = true;
+    // Android 지속 알림 채널을 미리 준비(iOS/미지원/실패 시 조용히 no-op).
+    void ensureTrackingChannel().catch(() => {});
     void (async () => {
       const done = await isOnboardingComplete();
       if (mounted) setOnboardingDone(done);
