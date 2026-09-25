@@ -10,7 +10,11 @@ import { palette } from '../src/theme';
 import '../src/session/backgroundTask';
 import '../src/sensors/geofenceController';
 // FEAT-006: 최초 실행 시 단계적 권한 온보딩으로 유도한다(완료 후 스킵).
-import { isOnboardingComplete } from '../src/storage/onboarding';
+import {
+  isOnboardingComplete,
+  subscribeOnboardingComplete,
+  wasCompletedThisSession,
+} from '../src/storage/onboarding';
 // 보행 세션용 "측정 중" 지속 알림의 Android 채널을 앱 시작 시 1회 준비한다(iOS 무해).
 import { ensureTrackingChannel } from '../src/notifications/alerts';
 
@@ -25,11 +29,19 @@ export default function RootLayout() {
     // Android 지속 알림 채널을 미리 준비(iOS/미지원/실패 시 조용히 no-op).
     void ensureTrackingChannel().catch(() => {});
     void (async () => {
-      const done = await isOnboardingComplete();
+      // 이번 세션에서 이미 완료 신호가 있었다면(경합 상황) 곧바로 true 로 반영한다.
+      const done = wasCompletedThisSession() || (await isOnboardingComplete());
       if (mounted) setOnboardingDone(done);
     })();
+    // 온보딩 완료 신호를 구독한다. onFinish -> markOnboardingComplete 가 이 세션에서
+    // 완료를 저장하면, AsyncStorage 재조회 없이 즉시 게이트 상태를 true 로 갱신한다.
+    // 이로써 router.replace('/') 직후에도 홈에서 다시 온보딩으로 튕기지 않는다.
+    const unsubscribe = subscribeOnboardingComplete(() => {
+      if (mounted) setOnboardingDone(true);
+    });
     return () => {
       mounted = false;
+      unsubscribe();
     };
   }, []);
 

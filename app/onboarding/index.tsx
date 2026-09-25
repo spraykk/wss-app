@@ -23,7 +23,7 @@ export default function OnboardingWelcome() {
         </Text>
         <Text style={styles.bullet}>
           • 위치·경로는 기기 안에만 저장되고 서버로 전송하지 않아요. 다른 사용자와
-          비교할 수 있도록 익명 점수와 날짜만 통계 서버로 보냅니다.
+          비교할 수 있도록 익명 점수와 날짜, 그리고 선택 시 연령'대'만 통계 서버로 보냅니다.
         </Text>
       </View>
 
