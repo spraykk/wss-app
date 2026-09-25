@@ -23,7 +23,7 @@ register('./ts-transpile-hook.mjs', import.meta.url);
 // 그 로더(loadRawAccidentZones)는 Node 에서 그대로 실행하면 안 된다. 대신 검증 스크립트가
 // JSON 을 직접 파일시스템에서 읽어(node:fs) 순수 함수(mergeNearbyZones 등)에 주입한다.
 // 이렇게 해서 node:* 의존은 scripts/ 안에만 남고 src/ 에는 0건이 된다.
-const { mergeNearbyZones, postProcessZones, haversineMeters } =
+const { mergeNearbyZones, postProcessZones, haversineMeters, ZONE_RADIUS_SCALE } =
   await import('../src/data/accidentZones.ts');
 const { computeRiskIntensity, computeZoneSeverity, computeLocationWeight, LOCATION_WEIGHT } =
   await import('../src/wss/weights.ts');
@@ -214,12 +214,13 @@ assert(
   processedIds.size === processed.length,
   `${processedIds.size} unique / ${processed.length} total`
 );
-const RADIUS_SCALE = 0.6;
+// 기대 반경은 하드코딩하지 않고 소스의 ZONE_RADIUS_SCALE 을 그대로 import 해 상대적으로
+// 검증한다. 이렇게 하면 스케일 계수가 바뀌어도(0.6 -> 0.3 등) 이 검증이 소스와 항상 일치한다.
 const radiusScaledOk = processed.every((z, idx) => {
-  const expected = mergedDirect[idx].radiusMeters * RADIUS_SCALE;
+  const expected = mergedDirect[idx].radiusMeters * ZONE_RADIUS_SCALE;
   return Math.abs(z.radiusMeters - expected) <= 1e-6;
 });
-assert('postProcessZones 가 반경을 ZONE_RADIUS_SCALE(0.6)로 축소', radiusScaledOk);
+assert(`postProcessZones 가 반경을 ZONE_RADIUS_SCALE(${ZONE_RADIUS_SCALE})로 축소`, radiusScaledOk);
 const countsPreserved = processed.every(
   (z, idx) => z.accidentCount3y === mergedDirect[idx].accidentCount3y
 );

@@ -137,8 +137,9 @@ export async function fetchAccidentZonesFromTAAS(
 }
 
 // 폴리곤 근사 반경 축소 계수. 표준데이터 폴리곤을 원으로 단순화하면 실제보다
-// 넓게 잡히는 경향이 있어, 렌더/겹침 판정 시 40% 축소(0.6배)해 과대 표시를 막는다.
-export const ZONE_RADIUS_SCALE = 0.6;
+// 넓게 잡히는 경향이 있어, 렌더/겹침 판정 시 70% 축소(0.3배)해 과대 표시를 막는다.
+// (기존 0.6 대비 정확히 절반으로 줄여 지도 위 빨간 원 반경을 1/2로 축소한다.)
+export const ZONE_RADIUS_SCALE = 0.3;
 
 // assets/accident-zones.json 이 없거나 비었을 때의 안전 폴백(샘플) zone 목록.
 // 앱이 데이터 없이도 최소한의 지도/알림 동작을 유지하도록 한다.
