@@ -38,7 +38,7 @@
 
 ### 개발/검증 환경의 제약 (AI 작업 시 필수 인지)
 - **AI 샌드박스는 외부망 차단(INTEGRATIONS_ONLY)** + npm 레지스트리 접근 불가. 따라서 **RN 앱을 실제로 빌드/실행할 수 없고**, 새 npm 패키지도 설치 불가.
-- 대신 **순수 로직을 `scripts/verify-*.ts` 검증 스크립트**로 검증한다. 실행: `env -u NODE_OPTIONS node --experimental-strip-types scripts/verify-<name>.ts`. 현재 **16종** 존재, 전부 통과 유지가 필수 조건.
+- 대신 **순수 로직을 `scripts/verify-*.ts` 검증 스크립트**로 검증한다. 실행: `env -u NODE_OPTIONS node --experimental-strip-types scripts/verify-<name>.ts`. 현재 **20종** 존재, 전부 통과 유지가 필수 조건.
 - 그래서 규칙: `src/` 안에서는 node 표준 라이브러리(fs/path/url 등) import 금지(RN 런타임에 없음). JSON은 Metro `require`로만 로드. 순수 함수는 배열/값 주입식으로 설계해 node로 검증 가능하게 한다.
 - 실제 앱 동작 검증은 **개발자가 실기기에서 수동으로** 한다(AI는 못 함).
 
@@ -151,6 +151,15 @@ walkMinutes: elapsedMinutes,
 
 **목표(남은 부분 = Step 2)**: 인앱 상호작용만으로는 "다른 앱을 보며 걷는" 사용을 못 잡는다. 보행자가 화면을 보며 걷는지를 모션 자세 등 여러 단서로 추정해 `estimatedUse`를 채우는 것이 **Step 2** 이며, 이는 아직 감점에 반영되지 않는 별도 과제다.
 
+**Step 2 진행(방식1) — 자세 측정 화면 추가(감점 미반영)**: 실기기 테스트에서 "폰을 켜고 계속 돌아다녀도 점수가 안 떨어진다"는 문제(= confirmedUse 는 우리 앱 화면을 직접 터치한 시간만 잡으므로, 다른 앱을 보며 걸으면 우리 앱은 백그라운드=판단불가=감점없음)를 자이로/가속도계 기반 "폰 자세(사용 각도 범위) 추정"으로 풀기로 했고, **방식1(먼저 각도를 측정/기록하는 기능을 넣어 사용자가 실기기로 자세별 각도 데이터를 직접 수집 → 그 데이터로 임계 범위를 확정 → 이후 감점 반영)**을 선택했다. 이번 단계에서는 방식1의 첫 부분인 **"자세 측정/기록 화면"**만 추가했다.
+- 화면: `app/posture-lab.tsx`(제목 "자세 측정 도구"). `app/_layout.tsx` 에 `Stack.Screen` 등록, `app/report.tsx` 하단에 접근 링크("🧪 자세 측정 도구 (개발/측정용, 점수 미반영)") 추가.
+- 센서: `expo-sensors` 의 DeviceMotion(`accelerationIncludingGravity`)을 우선 사용하고, 중력 성분을 못 받으면 Accelerometer 로 폴백한다(**새 npm 패키지 없음**). 0.2초 간격으로 실시간 pitch(앞뒤)/roll(좌우) 을 큰 숫자로 표시한다.
+- 순수 함수: 각도/통계 계산은 `src/sensors/postureMath.ts` 로 분리했다 — `gravityToPitchRoll`(중력벡터 → pitch/roll 도), `summarizeAxis`/`summarizePosture`(개수·min/max/mean/median). RN/센서/node:* 의존 없는 순수 모듈이라 `scripts/verify-posture-math.ts`(신규)로 대표 자세(수평/수직/45도/좌우 눕힘) 각도와 통계를 assert 한다. 화면은 이 순수 함수를 호출만 한다.
+- 기록(로그): 자세 라벨(예: "보며 걷기") 입력 후 "기록 시작"→"기록 중지"로 구간을 수집하고, 중지 시 요약 통계(개수, pitch/roll 의 min/max/mean/median)를 **selectable 텍스트**로 표시해 사용자가 복사/캡처하기 쉽게 했다. **서버 전송 없음(로컬 표시만).**
+- **정직성/범위 한정(절대)**: 이 화면은 "측정 도구"이며 **아직 WSS 점수에 아무 영향이 없다**(감점 없음). 이 데이터로 사용자가 임계 범위를 정한 뒤에야 후속 단계에서 `estimatedUse` 추정/감점에 반영할 예정이다. WSS 엔진/세그먼트/업로드 로직은 이번에 건드리지 않았다.
+- **iOS 백그라운드 한계(정직성)**: 실제 "다른 앱 보며 걷기" 추정은 우리 앱이 백그라운드일 때도 모션을 읽어야 하지만 iOS 는 백그라운드 모션 연속성을 보장하지 않는다. 이 측정 화면은 **포그라운드**에서 자세별 각도를 수집하는 용도이며, 이 한계는 화면 문구·코드 주석에 남겼다(후속 설계에서 반드시 고려).
+- **개발자 측 남은 조작**: 실기기(preview/dev 빌드)에서 이 화면으로 여러 자세(① 화면 보며 걷기 ② 주머니 ③ 손에 들고 앞 보기)의 각도를 기록해 임계 범위 결정용 데이터를 수집한다.
+
 ### 7.2 iOS의 근본 제약 (반드시 고려)
 - iOS는 **백그라운드 앱에게 "화면이 켜져 있는지(스크린 온/오프)"를 알려주지 않는다.** 개인정보 보호 정책상 지속 조회 API가 막혀 있다.
 - iOS는 **"사용자가 지금 다른 앱(인스타/유튜브 등)을 보고 있는지"도 절대 알려주지 않는다.**
@@ -192,6 +201,8 @@ Step 1(인앱 상호작용 = confirmedUse)은 구현되었으나, 직접 화면 
 ### 기능 (이 문서의 주 검토 대상)
 - [x] **★ 미해결 과제 A — Step 1: 증거 밴드 분류(confirmedUse = 실제 인앱 터치/스크롤, confirmedUse 만 감점, '측정 불충분' 정책)** (7절) — 구현 완료.
 - [ ] **★ 미해결 과제 A — Step 2: 자세/모션 기반 estimatedUse 추정** (7.3절) — 별도 향후 과제(아직 감점 안 함).
+  - [x] **방식1 첫 단계: 자세 측정/기록 화면(`app/posture-lab.tsx`) 추가(감점 미반영)** (7.1절) — 구현 완료. 사용자가 실기기로 자세별 각도 데이터를 직접 수집할 예정.
+  - [ ] 사용자가 수집한 각도 데이터로 "사용 중" 임계 범위 확정 → estimatedUse 추정/감점 반영(후속).
 
 ### 출시 마무리
 - [ ] 앱 아이콘 PNG 확정(현재 SVG. 하늘색 파스텔 배경+흰 발자국 시안 있으나 PNG 변환 보류 상태).
@@ -227,6 +238,7 @@ src/session/
   weatherCache.ts   날씨 TTL 캐시
 src/sensors/
   motionClassifier.ts   [순수] walking/vehicle/idle 분류(차량 제외)
+  postureMath.ts        [순수][방식1 측정용] 중력벡터→pitch/roll(도), 요약통계(min/max/mean/median). 아직 점수 미반영
   walkingDetector.ts    센서/타이머 배선
   audioState.ts / useAudioEnvironment.ts  이어폰 차음 감지
   geofenceController.ts / geofenceSelection.ts  저전력 지오펜스
@@ -241,17 +253,18 @@ app/
   map.tsx           위험 지도(뷰포트 필터·반경 스케일 적용)
   report.tsx        리포트(점수·비교·주간 막대그래프·그룹통계)
   feedback.tsx      의견 보내기
+  posture-lab.tsx   [방식1 측정용] 자세 측정/기록 도구(pitch/roll 실시간+구간요약). 아직 점수 미반영
   onboarding/index.tsx, onboarding/permissions.tsx  온보딩(권한+연령대)
 modules/audio-environment/   커스텀 네이티브 오디오 모듈(Swift)
 supabase/schema.sql          DB 스키마(테이블·RLS·RPC)
 docs/feedback.html           피드백 웹 대시보드(로컬 HTML)
 docs/privacy-policy.md/.html 개인정보 처리방침
-scripts/verify-*.ts          순수 로직 검증(16종, 전부 통과 필수)
+scripts/verify-*.ts          순수 로직 검증(20종, 전부 통과 필수)
 assets/accident-zones.json   전국 사고다발지 12,780건(원본, 수정 금지)
 ```
 
-## 10. 검증 스크립트 목록(16종)
-verify-wss-example, verify-grade, verify-feedback, verify-grid, verify-audio-ear-mapping, verify-geofence-selection, verify-session-reducer, verify-overlap-geometry, verify-dedup, verify-segment-key, verify-overlap-render, verify-api-key, verify-supabase-stats, verify-motion-classifier, verify-weekly, verify-agegroup-stats.
+## 10. 검증 스크립트 목록(20종)
+verify-wss-example, verify-grade, verify-feedback, verify-grid, verify-audio-ear-mapping, verify-geofence-selection, verify-session-reducer, verify-overlap-geometry, verify-dedup, verify-segment-key, verify-overlap-render, verify-api-key, verify-supabase-stats, verify-motion-classifier, verify-weekly, verify-agegroup-stats, verify-usage-classification, verify-usage-wss, verify-interaction-tracker, verify-posture-math.
 실행: `env -u NODE_OPTIONS node --experimental-strip-types scripts/verify-<name>.ts`
 
 ---

@@ -347,6 +347,12 @@ export default function ReportScreen() {
         <Text style={styles.feedbackLink}>💬 의견 보내기</Text>
       </Link>
 
+      {/* 방식1(Step 2 준비): 자세 측정 도구로 가는 접근 링크.
+          개발/측정용 도구이며 아직 WSS 점수에 반영되지 않음을 문구로 명시한다. */}
+      <Link href="/posture-lab" asChild>
+        <Text style={styles.postureLabLink}>🧪 자세 측정 도구 (개발/측정용, 점수 미반영)</Text>
+      </Link>
+
       <View style={styles.disclaimerBox}>
         <Text style={styles.disclaimer}>
           WSS는 알려진 위험 요인(위치·날씨·시간대·청각·스마트폰 사용)을 종합한 참고
@@ -498,6 +504,17 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     overflow: 'hidden',
     ...shadow.button,
+  },
+  postureLabLink: {
+    marginTop: spacing.sm,
+    paddingVertical: spacing.md,
+    borderRadius: radius.pill,
+    backgroundColor: palette.surfaceAlt,
+    color: palette.textMuted,
+    fontSize: font.small,
+    fontWeight: '700',
+    textAlign: 'center',
+    overflow: 'hidden',
   },
   disclaimerBox: {
     marginTop: spacing.lg,
