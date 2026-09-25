@@ -136,11 +136,55 @@ export async function uploadScore(payload: WssScoreUpload): Promise<boolean> {
   }
 }
 
-// 테스터 피드백을 feedback 테이블에 insert 한다(uploadScore 와 동일한 안전 설계).
-// 성공하면 true, 미설정/오류/실패/유효성 위반이면 false 를 반환하되 예외를 던지지 않는다.
+// 피드백 전송의 구조화된 결과. 실패 시 사유(reason)와 사람이 읽을 수 있는
+// 진단 문구(detail)를 함께 담아, 화면에서 "전송 실패"만 뜨던 문제를 해결한다.
+//   - invalid: 클라이언트 유효성 위반(어떤 필드가 왜 잘못됐는지 detail 에 명시).
+//   - not_configured: Supabase URL/키 미설정(서버가 준비되지 않음).
+//   - server: insert 가 error 를 반환(Supabase 에러 message/code/hint 를 detail 에).
+//   - exception: 예상치 못한 예외(String(e)).
+// detail 에는 위치/경로/device_id 원본 등 민감정보를 절대 담지 않는다(유효성/서버
+// 에러 메시지만 노출).
+export type SubmitResult =
+  | { ok: true }
+  | {
+      ok: false;
+      reason: 'invalid' | 'not_configured' | 'server' | 'exception';
+      detail?: string;
+    };
+
+// Supabase 에러 객체(모양이 다양함)에서 message/code/details/hint 를 안전하게 추출해
+// 한 줄 문자열로 만든다. 민감정보가 아닌 서버 진단 필드만 사용한다.
+function describeSupabaseError(error: unknown): string {
+  if (error === null || error === undefined) return '알 수 없는 오류';
+  if (typeof error === 'string') return error;
+  const e = error as Record<string, unknown>;
+  const parts: string[] = [];
+  const message = typeof e.message === 'string' ? e.message.trim() : '';
+  if (message.length > 0) parts.push(message);
+  const code = e.code;
+  if (typeof code === 'string' && code.trim().length > 0) parts.push(`code=${code.trim()}`);
+  else if (typeof code === 'number') parts.push(`code=${code}`);
+  const hint = typeof e.hint === 'string' ? e.hint.trim() : '';
+  if (hint.length > 0) parts.push(`hint=${hint}`);
+  const details = typeof e.details === 'string' ? e.details.trim() : '';
+  if (details.length > 0) parts.push(`details=${details}`);
+  if (parts.length === 0) {
+    try {
+      return JSON.stringify(error);
+    } catch {
+      return String(error);
+    }
+  }
+  return parts.join(' · ');
+}
+
+// 테스터 피드백을 feedback 테이블에 insert 하고 구조화된 결과를 반환한다.
+// 예외를 던지지 않으며, 실패 사유를 화면에서 구체적으로 보여줄 수 있도록 한다.
 // 유효성(카테고리 4종, 별점 1~5 또는 null, 메시지 비어있지 않고 2000자 이하)은
 // 클라이언트에서도 한 번 확인해 서버 왕복 없이 잘못된 값을 걸러낸다(서버 check 와 동일).
-export async function submitFeedback(payload: FeedbackSubmission): Promise<boolean> {
+export async function submitFeedbackDetailed(
+  payload: FeedbackSubmission
+): Promise<SubmitResult> {
   const validCategory =
     payload.category === 'bug' ||
     payload.category === 'suggestion' ||
@@ -151,7 +195,20 @@ export async function submitFeedback(payload: FeedbackSubmission): Promise<boole
   const validRating =
     payload.rating === null ||
     (Number.isInteger(payload.rating) && payload.rating >= 1 && payload.rating <= 5);
-  if (!validCategory || !validMessage || !validRating) return false;
+
+  if (!validCategory) {
+    return { ok: false, reason: 'invalid', detail: '카테고리가 올바르지 않습니다(버그/제안/칭찬/기타).' };
+  }
+  if (!validMessage) {
+    const detail =
+      message.length === 0
+        ? '내용을 입력해 주세요.'
+        : `내용이 너무 깁니다(${message.length}/2000자).`;
+    return { ok: false, reason: 'invalid', detail };
+  }
+  if (!validRating) {
+    return { ok: false, reason: 'invalid', detail: '별점은 1~5 사이 정수이거나 미선택이어야 합니다.' };
+  }
 
   const client = getClient() as
     | {
@@ -160,7 +217,7 @@ export async function submitFeedback(payload: FeedbackSubmission): Promise<boole
         };
       }
     | null;
-  if (!client) return false;
+  if (!client) return { ok: false, reason: 'not_configured' };
   try {
     const { error } = await client.from('feedback').insert({
       device_id: payload.deviceId,
@@ -169,10 +226,20 @@ export async function submitFeedback(payload: FeedbackSubmission): Promise<boole
       message,
       app_version: payload.appVersion,
     });
-    return !error;
-  } catch {
-    return false;
+    if (error) {
+      return { ok: false, reason: 'server', detail: describeSupabaseError(error) };
+    }
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, reason: 'exception', detail: String(e) };
   }
+}
+
+// 기존 boolean 반환 계약을 유지한다(다른 참조가 깨지지 않게).
+// 내부적으로 submitFeedbackDetailed 를 호출해 성공 여부만 반환한다.
+export async function submitFeedback(payload: FeedbackSubmission): Promise<boolean> {
+  const result = await submitFeedbackDetailed(payload);
+  return result.ok;
 }
 
 // 전체 사용자 통계를 RPC 로 조회한다. 미설정/오류/표본없음이면 null 을 반환하고,

@@ -11,8 +11,8 @@ import {
   View,
 } from 'react-native';
 import { getOrCreateDeviceId } from '../src/storage/deviceId';
-import { submitFeedback } from '../src/data/supabase';
-import type { FeedbackCategory } from '../src/data/supabase';
+import { submitFeedbackDetailed } from '../src/data/supabase';
+import type { FeedbackCategory, SubmitResult } from '../src/data/supabase';
 import { palette, spacing, radius, font, shadow } from '../src/theme';
 
 // 카테고리 4종(스키마/ submitFeedback 과 동일). 라벨은 한글로 표시한다.
@@ -43,11 +43,29 @@ function readAppVersion(): string | null {
 
 type SubmitState = 'idle' | 'sending' | 'success' | 'error';
 
+// 실패 사유(reason)를 사용자에게 보여줄 한글 문구로 변환한다.
+// server/invalid/exception 은 진단용 detail 을 함께 노출한다(위치 등 민감정보 없음).
+function describeFailure(result: Extract<SubmitResult, { ok: false }>): string {
+  switch (result.reason) {
+    case 'not_configured':
+      return '서버가 설정되지 않았어요(관리자 문의).';
+    case 'server':
+      return `서버 오류: ${result.detail ?? '알 수 없는 오류'}`;
+    case 'invalid':
+      return `입력 확인: ${result.detail ?? '입력값을 확인해 주세요.'}`;
+    case 'exception':
+      return `예상치 못한 오류: ${result.detail ?? '알 수 없는 오류'}`;
+    default:
+      return '전송 실패. 잠시 후 다시 시도해 주세요.';
+  }
+}
+
 export default function FeedbackScreen() {
   const [category, setCategory] = useState<FeedbackCategory>('bug');
   const [rating, setRating] = useState<number | null>(null);
   const [message, setMessage] = useState('');
   const [state, setState] = useState<SubmitState>('idle');
+  const [errorText, setErrorText] = useState<string | null>(null);
 
   const appVersion = useMemo(() => readAppVersion(), []);
   const trimmed = message.trim();
@@ -56,25 +74,29 @@ export default function FeedbackScreen() {
   const onSubmit = async () => {
     if (!canSubmit) return;
     setState('sending');
+    setErrorText(null);
     try {
       const deviceId = await getOrCreateDeviceId();
-      const ok = await submitFeedback({
+      const result = await submitFeedbackDetailed({
         category,
         rating,
         message: trimmed,
         appVersion,
         deviceId,
       });
-      if (ok) {
+      if (result.ok) {
         // 성공: 폼 초기화 후 감사 메시지 표시.
         setState('success');
         setCategory('bug');
         setRating(null);
         setMessage('');
       } else {
+        // 실패: 구체적인 사유/서버 응답을 화면에 노출(진단용).
+        setErrorText(describeFailure(result));
         setState('error');
       }
-    } catch {
+    } catch (e) {
+      setErrorText(`예상치 못한 오류: ${String(e)}`);
       setState('error');
     }
   };
@@ -162,8 +184,8 @@ export default function FeedbackScreen() {
       ) : null}
       {state === 'error' ? (
         <View style={[styles.statusCard, styles.statusError]}>
-          <Text style={styles.statusErrorText}>
-            전송 실패. 잠시 후 다시 시도해 주세요.
+          <Text style={styles.statusErrorText} selectable>
+            {errorText ?? '전송 실패. 잠시 후 다시 시도해 주세요.'}
           </Text>
         </View>
       ) : null}
@@ -226,7 +248,12 @@ const styles = StyleSheet.create({
   statusSuccess: { backgroundColor: palette.safeBg },
   statusSuccessText: { color: palette.safeText, fontSize: font.body, fontWeight: '700' },
   statusError: { backgroundColor: palette.dangerBg },
-  statusErrorText: { color: palette.dangerText, fontSize: font.body, fontWeight: '700' },
+  statusErrorText: {
+    color: palette.dangerText,
+    fontSize: font.body,
+    fontWeight: '700',
+    lineHeight: 20,
+  },
   button: {
     alignSelf: 'stretch',
     alignItems: 'center',
