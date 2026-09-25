@@ -27,6 +27,7 @@ import { getCurrentTimeBand } from '../wss/context';
 import { computeWSS } from '../wss/engine';
 import { presentHighRiskAlert, presentCriticalScoreAlert } from '../notifications/alerts';
 import { getCachedWeather } from './weatherCache';
+import { latLonToGrid } from '../data/weather';
 import { reduceSession } from './sessionReducer';
 import type { WalkContextSample } from './sessionReducer';
 import { loadActiveSession, saveActiveSession } from './sessionStore';
@@ -41,9 +42,27 @@ import type { MotionState } from '../sensors/motionClassifier';
 // 별개다: 이 태스크는 백그라운드 위치 업데이트(startLocationUpdatesAsync)를 소비한다.
 export const SESSION_LOCATION_TASK_NAME = 'wss-session-location-task';
 
-// 위경도->KMA 격자 변환은 이 앱 범위 밖이므로, 서울 관악구 기준 격자를 기본값으로 쓴다.
+// 폴백 격자: 위경도가 없거나(유효하지 않거나) 격자 변환이 실패할 때만 쓰는 안전 기본값.
+// 정상 경로에서는 실제 GPS 좌표를 latLonToGrid 로 변환해 전국 어디서나 정확한 날씨를 받는다.
 // (weather.ts 의 fetch 는 키가 없으면 'clear' 로 폴백하므로 기본값이어도 안전하다.)
-const DEFAULT_KMA_GRID = { nx: 59, ny: 125 };
+const FALLBACK_KMA_GRID = { nx: 59, ny: 125 };
+
+// 위경도를 KMA 격자로 변환한다. 좌표가 유효하지 않거나 변환 결과가 유한수가 아니면
+// 안전 폴백 격자를 반환한다(위경도 정보가 없는 극단적 경우에만 발생).
+function gridForLocation(latitude: number, longitude: number): { nx: number; ny: number } {
+  if (
+    !Number.isFinite(latitude) ||
+    !Number.isFinite(longitude) ||
+    (latitude === 0 && longitude === 0)
+  ) {
+    return FALLBACK_KMA_GRID;
+  }
+  const grid = latLonToGrid(latitude, longitude);
+  if (!Number.isFinite(grid.nx) || !Number.isFinite(grid.ny)) {
+    return FALLBACK_KMA_GRID;
+  }
+  return grid;
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // 한 개의 위치 샘플을 세션 파이프라인에 통과시키는 공용 처리기.
@@ -76,8 +95,10 @@ export async function processLocationSample(
     zoneName = rep.name;
   }
 
-  // 2) 날씨(TTL 캐시). 3) 오디오 환경(best-effort, 딥 백그라운드에서 stale 가능).
-  const weather = await getCachedWeather({ nx: DEFAULT_KMA_GRID.nx, ny: DEFAULT_KMA_GRID.ny, now });
+  // 2) 날씨(TTL 캐시). 실제 GPS 위경도를 KMA 격자로 변환해 조회하므로 전국 어디서나 정확하다.
+  //    (변환 불가 시에만 안전 폴백 격자 사용.) 3) 오디오 환경(best-effort, 딥 백그라운드에서 stale 가능).
+  const grid = gridForLocation(latitude, longitude);
+  const weather = await getCachedWeather({ nx: grid.nx, ny: grid.ny, now });
   const audioEnv = readAudioEnvironmentSnapshot();
   const isEarOccluded = isEarEffectivelyOccluded(audioEnv);
   const timeBand = getCurrentTimeBand(now);
