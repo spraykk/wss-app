@@ -6,6 +6,7 @@ import { loadHistory } from '../src/storage/history';
 import { fetchStats } from '../src/data/supabase';
 import type { WssStats } from '../src/data/supabase';
 import type { WSSResult } from '../src/types';
+import { palette, spacing, radius, font, shadow } from '../src/theme';
 
 // 통계 표시에 필요한 최소 표본 수. 이보다 적으면(또는 미설정/오류면) 가짜 숫자를
 // 보여주지 않고 "아직 데이터가 부족합니다"로 정직하게 표시한다.
@@ -29,46 +30,71 @@ export default function ReportScreen() {
     stats.q3Score !== null;
 
   return (
-    <ScrollView contentContainerStyle={styles.container}>
+    <ScrollView style={styles.screen} contentContainerStyle={styles.container}>
       {latest ? (
         <View style={styles.card}>
           <Text style={styles.title}>최근 보행 결과</Text>
           <Text style={styles.big}>{Math.round(latest.displayScore)}점</Text>
-          <Text style={styles.row}>원점수(rawScore): {latest.rawScore.toFixed(2)}</Text>
-          <Text style={styles.row}>사용 비율: {(latest.usageRatio * 100).toFixed(1)}%</Text>
-          <Text style={styles.row}>
-            고위험 zone 사용 중 진입: {latest.enteredHighRiskZoneWhileUsingPhone ? '예' : '아니오'}
-          </Text>
+          <View style={styles.metricRow}>
+            <Text style={styles.metricLabel}>원점수(rawScore)</Text>
+            <Text style={styles.metricValue}>{latest.rawScore.toFixed(2)}</Text>
+          </View>
+          <View style={styles.metricRow}>
+            <Text style={styles.metricLabel}>사용 비율</Text>
+            <Text style={styles.metricValue}>{(latest.usageRatio * 100).toFixed(1)}%</Text>
+          </View>
+          <View style={styles.metricRow}>
+            <Text style={styles.metricLabel}>고위험 zone 사용 중 진입</Text>
+            <Text style={styles.metricValue}>
+              {latest.enteredHighRiskZoneWhileUsingPhone ? '예' : '아니오'}
+            </Text>
+          </View>
           <Text style={styles.subtitle}>세그먼트 분해</Text>
           {latest.segmentBreakdown.map((s, i) => (
-            <Text key={`${s.regionId}-${i}`} style={styles.row}>
-              {s.regionId}: 가중치 {s.weight.combined.toFixed(3)} / 기여 {s.contribution.toFixed(2)}
-            </Text>
+            <View key={`${s.regionId}-${i}`} style={styles.segmentRow}>
+              <Text style={styles.segmentId}>{s.regionId}</Text>
+              <Text style={styles.segmentMeta}>
+                가중치 {s.weight.combined.toFixed(3)} · 기여 {s.contribution.toFixed(2)}
+              </Text>
+            </View>
           ))}
         </View>
       ) : (
-        <Text style={styles.empty}>저장된 보행 이력이 없습니다.</Text>
+        <View style={styles.card}>
+          <Text style={styles.empty}>저장된 보행 이력이 없습니다.</Text>
+        </View>
       )}
 
       <View style={styles.card}>
         <Text style={styles.title}>다른 사용자와 비교</Text>
         {hasEnoughStats && stats ? (
           <>
-            <Text style={styles.row}>
-              전체 사용자 평균: {Math.round(stats.meanScore as number)}점
-            </Text>
-            <Text style={styles.row}>
-              상위 25% 기준(Q3): {Math.round(stats.q3Score as number)}점
-            </Text>
+            <ComparisonBar
+              label="전체 사용자 평균"
+              value={Math.round(stats.meanScore as number)}
+              tone="sky"
+            />
+            <ComparisonBar
+              label="상위 25% 기준(Q3)"
+              value={Math.round(stats.q3Score as number)}
+              tone="yellow"
+            />
             {latest ? (
-              <Text style={styles.row}>
-                내 최근 점수 {Math.round(latest.displayScore)}점 —{' '}
-                {latest.displayScore >= (stats.q3Score as number)
-                  ? '상위 25% 안에 들어요.'
-                  : latest.displayScore >= (stats.meanScore as number)
-                    ? '평균보다 높아요.'
-                    : '평균보다 낮아요. 조금 더 안전하게 걸어봐요.'}
-              </Text>
+              <>
+                <ComparisonBar
+                  label="내 최근 점수"
+                  value={Math.round(latest.displayScore)}
+                  tone="pink"
+                />
+                <Text style={styles.compareNote}>
+                  내 최근 점수 {Math.round(latest.displayScore)}점 —{' '}
+                  {latest.displayScore >= (stats.q3Score as number)
+                    ? '상위 25% 안에 들어요.'
+                    : latest.displayScore >= (stats.meanScore as number)
+                      ? '평균보다 높아요.'
+                      : '평균보다 낮아요. 조금 더 안전하게 걸어봐요.'}
+                </Text>
+              </>
             ) : (
               <Text style={styles.muted}>보행을 완료하면 내 점수와 비교해 드려요.</Text>
             )}
@@ -84,12 +110,18 @@ export default function ReportScreen() {
       </View>
 
       <Text style={styles.subtitle}>이력 ({history.length})</Text>
-      {history.map((h, i) => (
-        <View key={i} style={styles.historyRow}>
-          <Text>{Math.round(h.displayScore)}점</Text>
-          <Text style={styles.muted}>raw {h.rawScore.toFixed(1)}</Text>
-        </View>
-      ))}
+      <View style={styles.card}>
+        {history.length === 0 ? (
+          <Text style={styles.muted}>완료한 보행이 여기에 쌓여요.</Text>
+        ) : (
+          history.map((h, i) => (
+            <View key={i} style={styles.historyRow}>
+              <Text style={styles.historyScore}>{Math.round(h.displayScore)}점</Text>
+              <Text style={styles.muted}>raw {h.rawScore.toFixed(1)}</Text>
+            </View>
+          ))
+        )}
+      </View>
 
       <View style={styles.disclaimerBox}>
         <Text style={styles.disclaimer}>
@@ -107,16 +139,77 @@ export default function ReportScreen() {
   );
 }
 
+// 점수(0~100)를 간단한 파스텔 바로 시각화한다. 순수 표시용이며 계산 로직과 무관.
+function ComparisonBar(props: { label: string; value: number; tone: 'sky' | 'pink' | 'yellow' }) {
+  const clamped = Math.max(0, Math.min(100, props.value));
+  const fillColor =
+    props.tone === 'pink' ? palette.pinkDeep : props.tone === 'yellow' ? palette.yellowDeep : palette.skyDeep;
+  return (
+    <View style={styles.barBlock}>
+      <View style={styles.barHeader}>
+        <Text style={styles.barLabel}>{props.label}</Text>
+        <Text style={styles.barValue}>{props.value}점</Text>
+      </View>
+      <View style={styles.barTrack}>
+        <View style={[styles.barFill, { width: `${clamped}%`, backgroundColor: fillColor }]} />
+      </View>
+    </View>
+  );
+}
+
 const styles = StyleSheet.create({
-  container: { padding: 20, gap: 12 },
-  card: { padding: 16, borderRadius: 12, backgroundColor: '#f4f6f8', gap: 6 },
-  title: { fontSize: 16, fontWeight: '700' },
-  big: { fontSize: 48, fontWeight: '800' },
-  subtitle: { fontSize: 15, fontWeight: '700', marginTop: 16 },
-  row: { fontSize: 14, color: '#333' },
-  empty: { fontSize: 15, color: '#777', textAlign: 'center', marginTop: 40 },
-  historyRow: { flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 6 },
-  muted: { color: '#888' },
-  disclaimerBox: { marginTop: 24, padding: 12, borderRadius: 10, backgroundColor: '#eef1f4', gap: 8 },
-  disclaimer: { fontSize: 12, color: '#666', lineHeight: 18 },
+  screen: { backgroundColor: palette.bg },
+  container: { padding: spacing.xl, gap: spacing.md },
+  card: {
+    padding: spacing.lg,
+    borderRadius: radius.md,
+    backgroundColor: palette.surface,
+    gap: spacing.sm,
+    ...shadow.card,
+  },
+  title: { fontSize: font.label, fontWeight: '800', color: palette.text },
+  big: { fontSize: 52, fontWeight: '800', color: palette.skyDeep },
+  metricRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
+  metricLabel: { fontSize: font.body, color: palette.textMuted },
+  metricValue: { fontSize: font.body, color: palette.text, fontWeight: '700' },
+  subtitle: { fontSize: font.label, fontWeight: '800', color: palette.text, marginTop: spacing.sm },
+  segmentRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingVertical: spacing.xs,
+  },
+  segmentId: { fontSize: font.body, color: palette.text, fontWeight: '600' },
+  segmentMeta: { fontSize: font.small, color: palette.textMuted },
+  empty: { fontSize: font.label, color: palette.textMuted, textAlign: 'center', paddingVertical: spacing.lg },
+  historyRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingVertical: spacing.sm,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: palette.border,
+  },
+  historyScore: { fontSize: font.body, color: palette.text, fontWeight: '700' },
+  muted: { color: palette.textFaint, fontSize: font.small },
+  compareNote: { fontSize: font.body, color: palette.text, marginTop: spacing.xs, lineHeight: 22 },
+  barBlock: { gap: spacing.xs, marginTop: spacing.xs },
+  barHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
+  barLabel: { fontSize: font.small, color: palette.textMuted },
+  barValue: { fontSize: font.small, color: palette.text, fontWeight: '700' },
+  barTrack: {
+    height: 12,
+    borderRadius: radius.pill,
+    backgroundColor: palette.surfaceAlt,
+    overflow: 'hidden',
+  },
+  barFill: { height: 12, borderRadius: radius.pill },
+  disclaimerBox: {
+    marginTop: spacing.lg,
+    padding: spacing.lg,
+    borderRadius: radius.md,
+    backgroundColor: palette.surfaceAlt,
+    gap: spacing.sm,
+  },
+  disclaimer: { fontSize: font.caption, color: palette.textMuted, lineHeight: 18 },
 });

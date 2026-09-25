@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react';
 import { Stack, useRouter, useSegments } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
+import { palette } from '../src/theme';
 // FEAT-004: 백그라운드 세션 파이프라인/지오펜스 태스크를 전역 스코프에서 등록한다.
 // TaskManager.defineTask 는 Expo 요구상 모듈 로드 시점(전역)에서 정의되어야 하므로,
 // 이 두 모듈을 import 하는 것만으로 태스크가 등록된다(사이드이펙트 import).
@@ -43,8 +44,17 @@ export default function RootLayout() {
 
   return (
     <>
-      <StatusBar style="auto" />
-      <Stack screenOptions={{ headerTitleAlign: 'center' }}>
+      <StatusBar style="dark" />
+      <Stack
+        screenOptions={{
+          headerTitleAlign: 'center',
+          headerStyle: { backgroundColor: palette.sky },
+          headerTintColor: palette.text,
+          headerTitleStyle: { fontWeight: '800', color: palette.text },
+          headerShadowVisible: false,
+          contentStyle: { backgroundColor: palette.bg },
+        }}
+      >
         <Stack.Screen name="index" options={{ title: '보행 개선' }} />
         <Stack.Screen name="map" options={{ title: '위험 지도' }} />
         <Stack.Screen name="report" options={{ title: 'WSS 리포트' }} />

@@ -15,6 +15,7 @@ import {
   requestAlerts,
 } from '../../src/permissions/locationPermissions';
 import { markOnboardingComplete } from '../../src/storage/onboarding';
+import { palette, spacing, radius, font, shadow } from '../../src/theme';
 
 type Step = 'whenInUse' | 'always' | 'notifications' | 'done';
 
@@ -107,12 +108,15 @@ function StepView(props: {
 }) {
   return (
     <View style={styles.container}>
-      <Text style={styles.title}>{props.title}</Text>
-      <Text style={styles.body}>{props.body}</Text>
+      <View style={styles.card}>
+        <Text style={styles.title}>{props.title}</Text>
+        <Text style={styles.body}>{props.body}</Text>
+      </View>
       <TouchableOpacity
         style={[styles.button, props.busy ? styles.buttonDisabled : null]}
         disabled={props.busy}
         onPress={() => props.onPress()}
+        activeOpacity={0.85}
       >
         <Text style={styles.buttonText}>{props.cta}</Text>
       </TouchableOpacity>
@@ -121,10 +125,30 @@ function StepView(props: {
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, justifyContent: 'center', padding: 28, gap: 18, backgroundColor: '#fff' },
-  title: { fontSize: 24, fontWeight: '800' },
-  body: { fontSize: 15, lineHeight: 24, color: '#444' },
-  button: { backgroundColor: '#1a7f37', paddingVertical: 16, borderRadius: 999, alignItems: 'center', marginTop: 8 },
+  container: {
+    flex: 1,
+    justifyContent: 'center',
+    padding: spacing.xxl,
+    gap: spacing.xl,
+    backgroundColor: palette.bg,
+  },
+  card: {
+    backgroundColor: palette.surface,
+    borderRadius: radius.lg,
+    padding: spacing.xl,
+    gap: spacing.lg,
+    ...shadow.card,
+  },
+  title: { fontSize: font.title, fontWeight: '800', color: palette.text },
+  body: { fontSize: font.body, lineHeight: 24, color: palette.textMuted },
+  button: {
+    backgroundColor: palette.skyDeep,
+    paddingVertical: spacing.lg,
+    borderRadius: radius.pill,
+    alignItems: 'center',
+    marginTop: spacing.sm,
+    ...shadow.button,
+  },
   buttonDisabled: { opacity: 0.5 },
-  buttonText: { color: '#fff', fontSize: 18, fontWeight: '700' },
+  buttonText: { color: palette.onDark, fontSize: font.subtitle, fontWeight: '800' },
 });

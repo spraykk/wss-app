@@ -3,6 +3,7 @@ import { Platform, StyleSheet, Text, TouchableOpacity, View } from 'react-native
 import MapView, { Circle, Marker, PROVIDER_GOOGLE } from 'react-native-maps';
 import * as Location from 'expo-location';
 import { computeOverlapCounts, loadAccidentZones } from '../src/data/accidentZones';
+import { palette, spacing, radius, font, shadow } from '../src/theme';
 
 const zones = loadAccidentZones();
 // 구역별로 "다른 위험구역과 원이 겹치는 개수"(마커 설명용) - zones와 같은 순서의 배열이라
@@ -120,25 +121,28 @@ export default function MapScreen() {
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1 },
+  container: { flex: 1, backgroundColor: palette.bg },
   mapWrapper: { flex: 1 },
   map: { flex: 1 },
   myLocationButton: {
     position: 'absolute',
-    right: 16,
-    bottom: 16,
-    backgroundColor: 'white',
-    paddingHorizontal: 14,
-    paddingVertical: 10,
-    borderRadius: 999,
-    elevation: 3,
-    shadowColor: '#000',
-    shadowOpacity: 0.15,
-    shadowRadius: 4,
-    shadowOffset: { width: 0, height: 2 },
+    right: spacing.lg,
+    bottom: spacing.lg,
+    backgroundColor: palette.surface,
+    paddingHorizontal: spacing.lg,
+    paddingVertical: spacing.md,
+    borderRadius: radius.pill,
+    ...shadow.button,
   },
-  myLocationButtonText: { fontWeight: '600', color: '#2563eb' },
-  legend: { padding: 14, backgroundColor: '#f8fafc', gap: 4 },
-  legendText: { fontSize: 12, color: '#334155', lineHeight: 18 },
-  sampleWarn: { fontSize: 12, color: '#dc2626', marginTop: 6, fontWeight: '600' },
+  myLocationButtonText: { fontWeight: '700', color: palette.skyDeep, fontSize: font.body },
+  legend: {
+    padding: spacing.lg,
+    backgroundColor: palette.surface,
+    gap: spacing.xs,
+    borderTopLeftRadius: radius.lg,
+    borderTopRightRadius: radius.lg,
+    ...shadow.card,
+  },
+  legendText: { fontSize: font.caption, color: palette.textMuted, lineHeight: 18 },
+  sampleWarn: { fontSize: font.caption, color: palette.dangerText, marginTop: spacing.sm, fontWeight: '700' },
 });

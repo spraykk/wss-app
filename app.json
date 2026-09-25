@@ -27,7 +27,7 @@
       "package": "com.wssapp.walkingsafety",
       "adaptiveIcon": {
         "foregroundImage": "./assets/icon.png",
-        "backgroundColor": "#0f3b45"
+        "backgroundColor": "#BFE3F5"
       },
       "predictiveBackGestureEnabled": false,
       "permissions": [
