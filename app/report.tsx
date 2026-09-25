@@ -15,6 +15,7 @@ import { palette, spacing, radius, font, shadow } from '../src/theme';
 import { classifyGrade } from '../src/wss/grade';
 import type { WssGrade } from '../src/wss/grade';
 import { WSS_CRITICAL } from '../src/wss/weights';
+import { useRatioPercent } from '../src/wss/useRatio';
 
 // 로컬 오늘 날짜를 yyyy-mm-dd 로 만든다(useWalkSession.toDateISO 와 동일 규칙).
 // node:* 없이 순수 Date 산술만 사용한다.
@@ -158,14 +159,22 @@ export default function ReportScreen() {
               '측정 불충분' 개념은 은퇴했다. 점수는 항상 그대로 보여준다. 옛 이력 행이 여전히
               measurementInsufficient 를 가질 수 있으나 더 이상 표시에 사용하지 않는다(가드 불필요,
               단순히 읽지 않음). */}
-          <Text style={styles.big}>{Math.round(latest.displayScore)}점</Text>
+          {/* FEAT-004: '사용 비율(%)'을 이 카드의 가장 크고 직관적인 대표 요소로 보여준다.
+              OO = Math.round(usageRatio*100) = useRatioPercent(usageRatio).
+              usageRatio = 감지된 사용 시간 / 총 보행 시간(WSSResult 에 항상 존재하므로
+              옛 이력 행도 안전하게 읽힌다). 점수(displayScore)는 아래에 보조로 함께 표시한다. */}
+          <View style={styles.useRatioHero}>
+            <Text style={styles.useRatioHeadline}>이번 보행 중</Text>
+            <Text style={styles.useRatioPercent}>{useRatioPercent(latest.usageRatio)}%</Text>
+            <Text style={styles.useRatioHeadline}>를 휴대폰 보며 걸었어요</Text>
+          </View>
+          <View style={styles.scoreSecondaryRow}>
+            <Text style={styles.metricLabel}>보행 안전 점수</Text>
+            <Text style={styles.scoreSecondaryValue}>{Math.round(latest.displayScore)}점</Text>
+          </View>
           <View style={styles.metricRow}>
             <Text style={styles.metricLabel}>원점수(rawScore)</Text>
             <Text style={styles.metricValue}>{latest.rawScore.toFixed(2)}</Text>
-          </View>
-          <View style={styles.metricRow}>
-            <Text style={styles.metricLabel}>사용 비율</Text>
-            <Text style={styles.metricValue}>{(latest.usageRatio * 100).toFixed(1)}%</Text>
           </View>
           <View style={styles.metricRow}>
             <Text style={styles.metricLabel}>고위험 zone 사용 중 진입</Text>
@@ -386,7 +395,22 @@ const styles = StyleSheet.create({
     ...shadow.card,
   },
   title: { fontSize: font.label, fontWeight: '800', color: palette.text },
-  big: { fontSize: 52, fontWeight: '800', color: palette.skyDeep },
+  // FEAT-004: 사용 비율(%)을 카드의 최상위 대표 요소로. 점수보다 크고 직관적으로.
+  useRatioHero: {
+    alignItems: 'center',
+    paddingVertical: spacing.md,
+    gap: spacing.xs,
+  },
+  useRatioHeadline: { fontSize: font.subtitle, color: palette.text, fontWeight: '700', textAlign: 'center' },
+  useRatioPercent: { fontSize: font.score, lineHeight: font.score + 8, fontWeight: '800', color: palette.pinkDeep },
+  // 점수는 아래에 보조로. 대표 문구보다 시각적으로 작게(라벨+값 한 줄).
+  scoreSecondaryRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginTop: spacing.xs,
+  },
+  scoreSecondaryValue: { fontSize: font.title, color: palette.skyDeep, fontWeight: '800' },
   metricRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
   metricLabel: { fontSize: font.body, color: palette.textMuted },
   metricValue: { fontSize: font.body, color: palette.text, fontWeight: '700' },

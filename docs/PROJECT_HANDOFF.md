@@ -38,7 +38,7 @@
 
 ### 개발/검증 환경의 제약 (AI 작업 시 필수 인지)
 - **AI 샌드박스는 외부망 차단(INTEGRATIONS_ONLY)** + npm 레지스트리 접근 불가. 따라서 **RN 앱을 실제로 빌드/실행할 수 없고**, 새 npm 패키지도 설치 불가.
-- 대신 **순수 로직을 `scripts/verify-*.ts` 검증 스크립트**로 검증한다. 실행: `env -u NODE_OPTIONS node --experimental-strip-types scripts/verify-<name>.ts`. 현재 **20종** 존재, 전부 통과 유지가 필수 조건.
+- 대신 **순수 로직을 `scripts/verify-*.ts` 검증 스크립트**로 검증한다. 실행: `env -u NODE_OPTIONS node --experimental-strip-types scripts/verify-<name>.ts`. 현재 **22종** 존재, 전부 통과 유지가 필수 조건.
 - 그래서 규칙: `src/` 안에서는 node 표준 라이브러리(fs/path/url 등) import 금지(RN 런타임에 없음). JSON은 Metro `require`로만 로드. 순수 함수는 배열/값 주입식으로 설계해 node로 검증 가능하게 한다.
 - 실제 앱 동작 검증은 **개발자가 실기기에서 수동으로** 한다(AI는 못 함).
 
@@ -48,7 +48,7 @@
 
 ### 3.1 세그먼트 기반 누적
 보행 세션은 여러 **세그먼트(WalkSegment)**로 쪼개진다. 각 세그먼트는 하나의 (지역, 위험강도, 날씨, 시간대, 이어폰상태) 조합 구간이며 다음을 가진다:
-- `smartphoneUseMinutes`: 이 구간에서 스마트폰 사용한 시간(분) — **★ 미해결 과제 A의 핵심 변수**
+- `confirmedUseMinutes`: 이 구간에서 자세 기반으로 감지된 "화면 보며 걷기" 사용 시간(분) - **채점 감점의 소스**(7절). 필드가 없는 레거시 세그먼트는 `smartphoneUseMinutes`로 폴백한다.
 - `walkMinutes`: 이 구간 총 보행 시간(분)
 - `riskIntensity`: 위치 위험강도(사고다발구역 severity 합, 구역 밖=0)
 - `weather`, `timeBand`, `isEarOccluded`
@@ -67,7 +67,8 @@
 
 ### 3.3 점수 공식 (`src/wss/engine.ts`)
 ```
-segment.contribution = combinedWeight × smartphoneUseMinutes
+useMinutes = confirmedUseMinutesOf(segment)   // 자세 감지 use 시간(레거시는 smartphoneUseMinutes 폴백)
+segment.contribution = combinedWeight × useMinutes
    (combinedWeight = wLocation × wWeather × wTime × wEar)
 totalDeduction = Σ contribution
 usageRatio = totalUseMinutes / totalWalkMinutes
@@ -77,8 +78,9 @@ penalty(usageRatio) = usageRatio<0.3 ? 0 : 40 × (usageRatio-0.3) × (walk<3분?
 displayScore = usageRatio>=0.3 ? clamp(100 - scaledDeduction - 4×penalty) : rawScore
 belowCriticalThreshold = rawScore < 60
 ```
+- **감점의 소스가 자세 기반 감지 사용 시간으로 바뀌었다**(7절): 이제 `useMinutes`는 "걷는 중 pitch>=10도가 3초 이상 지속"으로 감지된 use 시간이다. 다만 **공식의 구조, `DEDUCTION_SCALE`(k=4), 임계점 60, usageRatio 페널티(임계 0.3 / 강도 40 / walk<3분 시 x0.5 등 xk)는 그대로다(변경 없음).** 바뀐 것은 "무엇을 use 로 셀 것인가"뿐이고 그 use 시간을 점수로 환산하는 규칙은 동일하다.
 - `DEDUCTION_SCALE = 4` (k=4): 실증 가중치만으로는 점수가 90~98에 몰려 변별력이 없어, 감점을 4배 증폭. 시뮬레이션에서 평균~71, 하위10%~52, 로지스틱 변곡점~58 → **임계점을 60으로 확정**(개발자 결정).
-- **k=4, 임계점 60은 확정값 — 변경 금지.**
+- **k=4, 임계점 60, usageRatio 페널티 파라미터(0.3 / 40)는 확정값 - 변경 금지.**
 
 ### 3.4 등급 (`src/wss/grade.ts`)
 - 위험(60 미만) / 주의(60~평균) / 양호(평균~Q3) / 우수(Q3 이상) / 측정중(표본 5명 미만·미집계).
@@ -133,32 +135,44 @@ belowCriticalThreshold = rawScore < 60
 
 ---
 
-## 7. ★ 미해결 과제 A — 스마트폰 사용(화면 보며 걷기) 추정 [핵심 검토 요청]
+## 7. ★ 과제 A - 스마트폰 사용(화면 보며 걷기) 추정 [자세 기반 감지 채택됨]
 
-### 7.1 현재 상태 (Step 1 구현됨 — 과거 근사 제거)
+### 7.1 현재 상태 (자세 기반 사용 감지 채택 - WSS 감점을 구동)
 **과거 문제(제거됨)**: 예전 `backgroundTask.ts`는 스마트폰 사용 시간을 이렇게 근사했다.
 ```ts
 smartphoneUseMinutes: elapsedMinutes,   // = 걸은 시간 전체 (제거됨)
 walkMinutes: elapsedMinutes,
 ```
-즉 **"보행 측정을 시작한 뒤 걷는 시간 전체를 무조건 '스마트폰 사용 중'으로 간주"**했다. 주머니에 넣고 걷는 사람도 전 구간이 감점되는 명백한 오류였다("이걸 누가 쓰냐").
+즉 **"보행 측정을 시작한 뒤 걷는 시간 전체를 무조건 '스마트폰 사용 중'으로 간주"**했다. 주머니에 넣고 걷는 사람도 전 구간이 감점되는 명백한 오류였다("이걸 누가 쓰냐"). 그 뒤 중간 단계(Option A)에서는 인앱 터치만 confirmedUse 로 인정하고 나머지를 unknownUse('측정 불충분')로 두었으나, "다른 앱을 보며 걷는" 사용을 전혀 못 잡았다.
 
-**Step 1 (구현 완료 — Option A 증거 밴드 분류)**: 이제 걷는 각 구간의 경과 시간을 "증거 강도"에 따라 네 밴드(confirmedUse/estimatedUse/unknownUse/noUse) 중 정확히 하나로 배정한다(`src/session/usageClassification.ts`). 채점은 **confirmedUse(확인된 사용)만 감점**한다.
-- **confirmedUse = 실제 인앱 터치/스크롤 시간**: 루트 레이아웃(`app/_layout.tsx`)의 캡처 단계 터치 핸들러가 실제 상호작용 시각을 기록하고(`src/session/interactionTracker.ts`, 확인 창 `CONFIRMED_USE_WINDOW_MS`=60초), 백그라운드 태스크가 그 구간을 confirmedUse 로 분류한다.
-- **한계(정직성)**: confirmedUse 는 본질적으로 **"우리 앱이 포그라운드일 때의 인앱 상호작용" 시간**이다. 앱이 백그라운드이거나 사용자가 다른 앱을 보는 시간은 iOS 제약상 관측할 수 없어 **unknownUse**(모름)로 둔다. 사용/무사용을 단정하지 않는다.
-- **'측정 불충분' 정직성 정책**: 보행 중 미관측(unknown) 비율이 높으면(`UNKNOWN_RATIO_INSUFFICIENT_THRESHOLD`=0.5, 설계값) `measurementInsufficient`=true 로 표시하고, 리포트(`app/report.tsx`)에 '측정 불충분' 안내를 띄운다. 관측하지 못한 시간을 "안전하게 걸었다"고 가정해 좋은 점수를 주지 않는다.
-- **estimatedUse(자세 추정)는 Step 1 에서 감점하지 않는다**: 필드/파이프라인만 준비되어 있고 항상 0 이다. 자세 기반 추정은 아래 **Step 2 (별도 향후 과제)**이다.
+**현재(채택됨 · 자세 기반 이분화)**: 이제 사용 판정의 **유일한 소스는 보행 중 폰 자세(pitch)**다. 각 구간을 다음 규칙으로 **use(사용) / no-use(미사용)** 둘 중 하나로만 배정한다.
+- **use(화면 보며 걷기)**: **걷는 중** + pitch(기기 앞뒤 기울기)가 `PITCH_USE_THRESHOLD_DEG`(=10도) 이상으로 `USE_SUSTAIN_MS`(=3000ms=3초) **이상 지속**될 때.
+- **no-use(그 외 전부)**: 걷지 않거나, pitch가 임계 미만이거나, 임계를 넘겨도 3초 미만으로 튄 경우.
+- **센서 공백 = no-use(정직성)**: 샘플이 도착하지 않는 공백 구간은 "모르면 사용으로 감점하지 않는다"는 보수적 원칙에 따라 **no-use**로 귀속한다(사용자 결정 '가'). 관측하지 못한 시간을 사용으로 감점하지 않는다.
+- 판정은 순수 상태기계 `src/sensors/postureUsageDetector.ts`(`classifyPostureInterval` / `isSustainedUse`)가 담당하고, pitch 값 자체는 `src/sensors/postureMath.ts#gravityToPitchRoll`로 계산해 주입한다. 세그먼트 집계는 `src/session/usageClassification.ts`가 use/no-use 분을 합산한다. 감지된 use 시간은 세그먼트의 `confirmedUseMinutes`에 기록되고 채점(`src/wss/engine.ts#confirmedUseMinutesOf`)이 이것으로 감점한다.
 
-**목표(남은 부분 = Step 2)**: 인앱 상호작용만으로는 "다른 앱을 보며 걷는" 사용을 못 잡는다. 보행자가 화면을 보며 걷는지를 모션 자세 등 여러 단서로 추정해 `estimatedUse`를 채우는 것이 **Step 2** 이며, 이는 아직 감점에 반영되지 않는 별도 과제다.
+**설계값 (정직성 라벨 필수)**: `PITCH_USE_THRESHOLD_DEG=10`, `USE_SUSTAIN_MS=3000`은 **"사용자 1인 실측 기반 설계값 · 실제 사고 예측 아님"**이다. 이는 튜닝 가능한 설계값이며, 확정된(frozen) 채점 파라미터(k=4 / 임계점 60 / usageRatio 페널티 0.3·40, `weights.ts`)와는 성격이 다르다.
 
-**Step 2 진행(방식1) — 자세 측정 화면 추가(감점 미반영)**: 실기기 테스트에서 "폰을 켜고 계속 돌아다녀도 점수가 안 떨어진다"는 문제(= confirmedUse 는 우리 앱 화면을 직접 터치한 시간만 잡으므로, 다른 앱을 보며 걸으면 우리 앱은 백그라운드=판단불가=감점없음)를 자이로/가속도계 기반 "폰 자세(사용 각도 범위) 추정"으로 풀기로 했고, **방식1(먼저 각도를 측정/기록하는 기능을 넣어 사용자가 실기기로 자세별 각도 데이터를 직접 수집 → 그 데이터로 임계 범위를 확정 → 이후 감점 반영)**을 선택했다. 이번 단계에서는 방식1의 첫 부분인 **"자세 측정/기록 화면"**만 추가했다.
-- 화면: `app/posture-lab.tsx`(제목 "자세 측정 도구"). `app/_layout.tsx` 에 `Stack.Screen` 등록, `app/report.tsx` 하단에 접근 링크("🧪 자세 측정 도구 (개발/측정용, 점수 미반영)") 추가.
-- 센서: `expo-sensors` 의 DeviceMotion(`accelerationIncludingGravity`)을 우선 사용하고, 중력 성분을 못 받으면 Accelerometer 로 폴백한다(**새 npm 패키지 없음**). 0.2초 간격으로 실시간 pitch(앞뒤)/roll(좌우) 을 큰 숫자로 표시한다.
-- 순수 함수: 각도/통계 계산은 `src/sensors/postureMath.ts` 로 분리했다 — `gravityToPitchRoll`(중력벡터 → pitch/roll 도), `summarizeAxis`/`summarizePosture`(개수·min/max/mean/median). RN/센서/node:* 의존 없는 순수 모듈이라 `scripts/verify-posture-math.ts`(신규)로 대표 자세(수평/수직/45도/좌우 눕힘) 각도와 통계를 assert 한다. 화면은 이 순수 함수를 호출만 한다.
-- 기록(로그): 자세 라벨(예: "보며 걷기") 입력 후 "기록 시작"→"기록 중지"로 구간을 수집하고, 중지 시 요약 통계(개수, pitch/roll 의 min/max/mean/median)를 **selectable 텍스트**로 표시해 사용자가 복사/캡처하기 쉽게 했다. **서버 전송 없음(로컬 표시만).**
-- **정직성/범위 한정(절대)**: 이 화면은 "측정 도구"이며 **아직 WSS 점수에 아무 영향이 없다**(감점 없음). 이 데이터로 사용자가 임계 범위를 정한 뒤에야 후속 단계에서 `estimatedUse` 추정/감점에 반영할 예정이다. WSS 엔진/세그먼트/업로드 로직은 이번에 건드리지 않았다.
-- **iOS 백그라운드 한계(정직성)**: 실제 "다른 앱 보며 걷기" 추정은 우리 앱이 백그라운드일 때도 모션을 읽어야 하지만 iOS 는 백그라운드 모션 연속성을 보장하지 않는다. 이 측정 화면은 **포그라운드**에서 자세별 각도를 수집하는 용도이며, 이 한계는 화면 문구·코드 주석에 남겼다(후속 설계에서 반드시 고려).
-- **개발자 측 남은 조작**: 실기기(preview/dev 빌드)에서 이 화면으로 여러 자세(① 화면 보며 걷기 ② 주머니 ③ 손에 들고 앞 보기)의 각도를 기록해 임계 범위 결정용 데이터를 수집한다.
+**실측 근거(사용자 1인 단말, pitch deg 중앙값)**: 오직 "화면 보며 걷기"만 pitch가 명확히 양(+)이었고, 나머지 모든 비사용 자세는 중앙값이 음(-)이었다. 따라서 pitch 하나로 깔끔하게 분리되며 roll은 분리력이 약해 사용하지 않는다.
+
+| 자세 | pitch 중앙값(도) | 판정 |
+|------|------------------|------|
+| viewing-while-walking(화면 보며 걷기) | **+19.9** (평균 +20.3, 범위 -0.2..+51.6, 명확히 양) | use |
+| back-pocket(뒷주머니) | -70.0 | no-use |
+| front-pocket(앞주머니) | -73.7 | no-use |
+| jacket-inner(재킷 안주머니) | -13.5 | no-use |
+| jacket-outer(재킷 바깥주머니) | -22.1 | no-use |
+| in-hand-screen-facing(손에 들고 화면 위) | -51.7 | no-use |
+| in-hand-screen-away(손에 들고 화면 반대) | -54.4 | no-use |
+
+- **unknownUse / measurementInsufficient(측정 불충분)는 제거됨**: 이제 모든 초(second)가 자세 기준으로 use 또는 no-use 로 이분되므로 "모름" 밴드가 존재하지 않는다. `usageClassification.ts`의 `UsageBand` 타입과 세그먼트의 `estimatedUseMinutes`/`unknownUseMinutes` 필드는 **옛 이력·리포트와의 타입 호환을 위해서만 남겨 두고 항상 0**이다(더 이상 기록하지 않음). 리포트의 '측정 불충분' 안내와 그 판정 임계도 제거됐다.
+- **인앱 터치(confirmedUse) 소스와의 관계**: 사용 판정의 최종 소스는 자세다. 인앱 상호작용 추적(`interactionTracker.ts`)은 유지되지만 사용 시간을 지배하지 않는다(자세 감지가 이를 대체한다).
+
+**리포트 대표 문구**: 감지된 use 비율(usageRatio)을 사용자가 바로 이해하도록, 리포트(`app/report.tsx`)와 홈(`app/index.tsx`)이 **'이번 보행 중 OO%를 휴대폰 보며 걸었어요'** 형태로 눈에 띄게 표시한다. 백분율 규칙은 순수 유도 함수 `src/wss/useRatio.ts`(`useRatioPercent`/`formatUseRatioPercent`)로 단일화해 홈·리포트가 동일하게 계산한다.
+
+### 7.1a iOS 백그라운드 센서 연속성 (코드로 보장되지 않음 · 온디바이스 검증 항목)
+- 실제 "다른 앱을 보며 걷기"까지 잡으려면 우리 앱이 백그라운드일 때도 모션(pitch)을 읽어야 한다. 앱 프로세스는 `UIBackgroundModes:location`으로 살아 있을 수 있으나, **iOS는 백그라운드 모션 연속성을 보장하지 않으며 시스템 판단에 따라 앱이 종료될 수 있다.** 즉 백그라운드에서 pitch 샘플이 계속 들어온다는 보장을 **코드가 제공하지 않는다.**
+- 이 한계는 **온디바이스 검증 항목**으로 남긴다(실기기에서 화면 끄고/다른 앱 켠 상태로 걸으며 샘플 연속성 확인). 방어책은 위의 **센서 공백 = no-use** 정책이다: 샘플이 끊기면 사용으로 감점하지 않으므로, 백그라운드 종료가 사용자를 부당하게 감점시키지 않는다.
 
 ### 7.2 iOS의 근본 제약 (반드시 고려)
 - iOS는 **백그라운드 앱에게 "화면이 켜져 있는지(스크린 온/오프)"를 알려주지 않는다.** 개인정보 보호 정책상 지속 조회 API가 막혀 있다.
@@ -167,28 +181,27 @@ walkMinutes: elapsedMinutes,
 - **`UIScreen.brightness`(밝기)는 우리 앱이 포그라운드일 때만 신뢰 가능**하고, 백그라운드에서는 갱신이 안 되거나 마지막 값이 굳는다.
 - **Always-On Display(AOD, iPhone 14 Pro+)** 때문에 "밝기 > 0 = 화면 켜짐" 판정은 오판이 난다(꺼진 상태에서도 저휘도로 켜져 있음). → **밝기 단독 판정은 부적절.**
 
-### 7.3 Step 2 방향 (자세 추정 estimatedUse — 아직 감점하지 않는 별도 과제)
-Step 1(인앱 상호작용 = confirmedUse)은 구현되었으나, 직접 화면 감지가 막혀 있으니 **"화면을 보며 걷는 사람의 행동 패턴"을 여러 신호로 조합해 추정**해 `estimatedUse`를 채우는 것이 Step 2 이다(현재는 항상 0, 감점 안 함):
+### 7.3 채택된 접근 정리 및 향후 개선 여지
+현재 사용 판정은 **보행 중 pitch(자세) 단일 신호**로 이분한다(위 7.1). 직접 화면 감지(스크린 온/다른 앱 응시)는 iOS가 막고 있으므로, 관측 가능한 최소 신호인 자세로 "화면 보며 걷기"를 보수적으로 추정한다. 참고로 아래 신호들은 검토했으나 현재는 pitch만 채택했다(정직성: 실측으로 분리력이 확인된 신호만 사용).
 
-| 단서 | 활용 | 신뢰도 |
-|------|------|--------|
-| ① 우리 앱이 포그라운드(AppState) | 우리 앱을 보며 걷는 중 = 확실한 사용 | 높음(확실) |
-| ② 걷는 중 폰 자세(가속도계 pitch): 보는 자세(수평~45도)로 안정 유지 | 주머니(수직/뒤집힘/흔들림) vs 보는 자세 구분 | 중간 |
-| ③ 걸음은 계속되는데 폰 방향이 안정적으로 "보는 각도" 유지 | 흔들리는 주머니와 달리 화면이 얼굴 향해 안정 | 중간 |
-| ④ 이어폰 사용 중(이미 구현) | 콘텐츠 소비 확률↑(보조) | 낮음(보조) |
+| 단서 | 현재 사용 여부 | 비고 |
+|------|----------------|------|
+| ① 걷는 중 폰 자세(pitch) | **채택(유일 소스)** | 실측상 사용 자세만 pitch 양(+), 10도·3초 지속으로 분리 |
+| ② roll(좌우 기울기) | 미사용 | 실측 분리력 약함 |
+| ③ 우리 앱 포그라운드(AppState)·인앱 터치 | 보조(비지배) | interactionTracker 유지하나 사용 시간을 지배하지 않음 |
+| ④ 이어폰 사용 중(이미 구현) | 위험 가중치 배수 | 사용 시간 판정과는 별개 |
 
-- **핵심 아이디어**: "폰이 보는 자세(수평~45도)로 안정적으로 유지되며 걸음이 지속되는 시간"을 사용 중으로 추정. 밝기는 AOD/백그라운드 문제로 단독 사용하지 않고 기껏해야 보조.
-- 기존 `motionClassifier`(walking/vehicle/idle 판정)를 확장하거나 별도 자세 분류기 순수 모듈을 추가하는 방식 검토 중.
-- **정직성**: 완벽한 감지가 아니라 "행동 패턴 기반 추정(휴리스틱)"임을 앱/문서에 명시할 것.
+- **핵심 원칙**: "걷는 중 pitch가 임계 이상으로 3초 이상 지속되는 시간"을 사용으로 본다. 밝기는 AOD/백그라운드 문제로 사용하지 않는다.
+- **정직성**: 완벽한 감지가 아니라 "사용자 1인 실측 기반의 보수적 자세 휴리스틱"임을 앱/문서/코드 주석에 명시했다. 설계값은 실기기 데이터가 더 모이면 재튜닝할 수 있다(frozen 아님).
 
 ### 7.4 다른 AI에게 바라는 검토 포인트
-1. 위 방향(모션 자세 + 앱 포그라운드 조합)의 타당성·정확도 개선안.
-2. iOS에서 우리가 놓친 **합법적으로 가능한 다른 신호**가 있는가? (예: Core Motion의 device motion/attitude, proximity sensor, Screen Time API의 가능/불가 범위, activity type, `UIApplication` 상태 전이, 오디오 세션 상태 등)
-3. 밝기·프록시미티·attitude 등을 **어떻게 조합**해야 오탐(주머니 속인데 사용으로 판정)과 미탐(보는데 미사용으로 판정)을 최소화할지.
-4. iOS 제약상 정말 불가능한 것과 가능한 것의 경계를 명확히.
+1. 자세(pitch) 단일 신호 채택의 타당성과, 다중 사용자로 일반화할 때의 임계 재보정 방법.
+2. iOS에서 우리가 놓친 **합법적으로 가능한 다른 신호**가 있는가? (예: Core Motion의 device motion/attitude 연속성, proximity sensor, Screen Time API의 가능/불가 범위, activity type, `UIApplication` 상태 전이, 오디오 세션 상태 등)
+3. pitch·attitude 등을 **어떻게 조합**해야 오탐(주머니 속인데 사용으로 판정)과 미탐(보는데 미사용으로 판정)을 더 줄일지.
+4. 백그라운드 모션 연속성(7.1a)을 iOS 제약 안에서 얼마나 개선할 수 있는지, 그리고 센서 공백=no-use 방어가 충분한지.
 5. 정직성 원칙(휴리스틱임을 인정)을 지키면서도 사용자가 납득할 UX 설계.
 
-> 제약 재확인: 새 npm 패키지 추가는 신중히(가능하면 expo 기본 제공 모듈: expo-sensors의 Accelerometer/DeviceMotion, expo-brightness 등 이미 Expo 생태계에 있는 것 위주). 순수 판정 로직은 `scripts/verify-*.ts`로 검증 가능하게 순수 함수로 분리해야 함.
+> 제약 재확인: 새 npm 패키지 추가는 신중히(가능하면 expo 기본 제공 모듈: expo-sensors의 Accelerometer/DeviceMotion 등 이미 Expo 생태계에 있는 것 위주). 순수 판정 로직은 `scripts/verify-*.ts`로 검증 가능하게 순수 함수로 분리해야 함.
 
 ---
 
@@ -199,10 +212,12 @@ Step 1(인앱 상호작용 = confirmedUse)은 구현되었으나, 직접 화면 
 - [ ] 최신 코드로 새 preview 빌드 → 실기기 설치 → 검증(빨간원 절반/온보딩 루프 해소/막대그래프/의견전송/연령대).
 
 ### 기능 (이 문서의 주 검토 대상)
-- [x] **★ 미해결 과제 A — Step 1: 증거 밴드 분류(confirmedUse = 실제 인앱 터치/스크롤, confirmedUse 만 감점, '측정 불충분' 정책)** (7절) — 구현 완료.
-- [ ] **★ 미해결 과제 A — Step 2: 자세/모션 기반 estimatedUse 추정** (7.3절) — 별도 향후 과제(아직 감점 안 함).
-  - [x] **방식1 첫 단계: 자세 측정/기록 화면(`app/posture-lab.tsx`) 추가(감점 미반영)** (7.1절) — 구현 완료. 사용자가 실기기로 자세별 각도 데이터를 직접 수집할 예정.
-  - [ ] 사용자가 수집한 각도 데이터로 "사용 중" 임계 범위 확정 → estimatedUse 추정/감점 반영(후속).
+- [x] **★ 과제 A - 자세 기반 사용 감지 채택 및 WSS 감점 구동** (7절) - 구현 완료. 걷는 중 pitch>=10도가 3초 이상 지속되면 use, 그 외/센서 공백은 no-use. `PITCH_USE_THRESHOLD_DEG=10`, `USE_SUSTAIN_MS=3000`은 사용자 1인 실측 기반 설계값.
+  - [x] 자세 측정/기록 화면(`app/posture-lab.tsx`)으로 자세별 각도 데이터 수집 - 완료(측정 근거 수집용).
+  - [x] 수집한 실측(화면 보며 걷기 +19.9 vs 비사용 자세 전부 음수)으로 임계 확정 → 감점 반영 - 완료.
+  - [x] unknownUse / '측정 불충분' 개념 제거(모든 초가 use/no-use 로 이분) - 완료.
+  - [x] 감지 use 비율을 리포트/홈에 '이번 보행 중 OO%를 휴대폰 보며 걸었어요'로 표시(`src/wss/useRatio.ts`) - 완료.
+  - [ ] iOS 백그라운드 모션 연속성은 코드로 보장되지 않음 → **온디바이스 검증 항목**(7.1a). 센서 공백=no-use 로 방어.
 
 ### 출시 마무리
 - [ ] 앱 아이콘 PNG 확정(현재 SVG. 하늘색 파스텔 배경+흰 발자국 시안 있으나 PNG 변환 보류 상태).
@@ -210,7 +225,7 @@ Step 1(인앱 상호작용 = confirmedUse)은 구현되었으나, 직접 화면 
 - [ ] 실전 테스트(실제로 걸으며 점수·업로드·알림·차량제외 동작 확인).
 
 ### 알려진 사소한 정리거리 (선택)
-- [ ] `app.json`의 `ios.infoPlist.UIBackgroundModes`에 "location" 3회 중복, `android.permissions`에 동일 권한 2회 중복 — 기능엔 무해하나 정리 가능.
+- [ ] `app.json`의 `ios.infoPlist.UIBackgroundModes`에 "location" 3회 중복, `android.permissions`에 동일 권한 2회 중복 - 기능엔 무해하나 정리 가능.
 
 ---
 
@@ -223,6 +238,7 @@ src/wss/
   grade.ts          등급 분류(위험/주의/양호/우수/측정중)
   context.ts        시간대(TimeBand) 판정
   weekly.ts         [신규] 주간 일별 대표점수 집계
+  useRatio.ts       [신규] usageRatio(감지 사용/총 보행)→백분율 유도(홈·리포트 공용 문구)
 src/data/
   accidentZones.ts  사고데이터 로드·dedup(공간격자)·ZONE_RADIUS_SCALE(0.3)·겹침/포함 판정
   supabase.ts       익명 업로드/통계/피드백(타임아웃·연령대·no-op 안전설계)
@@ -230,15 +246,16 @@ src/data/
   apiKey.ts         API 키 정규화(한 번만 인코딩)
   overlapGeometry.ts / overlapRender.ts  겹침 기하
 src/session/
-  backgroundTask.ts 백그라운드 세션 파이프라인(★ classifyInterval 로 증거 밴드 분류)
-  usageClassification.ts [Step 1] 증거 밴드(confirmed/estimated/unknown/noUse) 순수 분류
-  interactionTracker.ts  [Step 1] 인앱 터치/스크롤 시각 기록(confirmedUse 증거 소스)
+  backgroundTask.ts 백그라운드 세션 파이프라인(★ 자세 pitch 로 use/no-use 판정, classifyPostureInterval 호출)
+  usageClassification.ts 세그먼트 배열의 use/no-use 분 집계(UsageBand 타입은 하위호환용, estimated/unknown 은 항상 0=은퇴)
+  interactionTracker.ts  인앱 터치/스크롤 시각 기록(보조 신호; 자세 감지가 사용 시간을 지배)
   sessionReducer.ts 순수 세그먼트 누적 리듀서
   sessionStore.ts   활성 세션 지속(AsyncStorage)
   weatherCache.ts   날씨 TTL 캐시
 src/sensors/
   motionClassifier.ts   [순수] walking/vehicle/idle 분류(차량 제외)
-  postureMath.ts        [순수][방식1 측정용] 중력벡터→pitch/roll(도), 요약통계(min/max/mean/median). 아직 점수 미반영
+  postureMath.ts        [순수] 중력벡터→pitch/roll(도), 요약통계(min/max/mean/median)
+  postureUsageDetector.ts [순수][신규] 자세 기반 use/no-use 판정 상태기계. PITCH_USE_THRESHOLD_DEG=10, USE_SUSTAIN_MS=3000(사용자 1인 실측 기반 설계값). 센서 공백=no-use
   walkingDetector.ts    센서/타이머 배선
   audioState.ts / useAudioEnvironment.ts  이어폰 차음 감지
   geofenceController.ts / geofenceSelection.ts  저전력 지오펜스
@@ -253,21 +270,21 @@ app/
   map.tsx           위험 지도(뷰포트 필터·반경 스케일 적용)
   report.tsx        리포트(점수·비교·주간 막대그래프·그룹통계)
   feedback.tsx      의견 보내기
-  posture-lab.tsx   [방식1 측정용] 자세 측정/기록 도구(pitch/roll 실시간+구간요약). 아직 점수 미반영
+  posture-lab.tsx   자세 측정/기록 도구(pitch/roll 실시간+구간요약, 실측 데이터 수집용)
   onboarding/index.tsx, onboarding/permissions.tsx  온보딩(권한+연령대)
 modules/audio-environment/   커스텀 네이티브 오디오 모듈(Swift)
 supabase/schema.sql          DB 스키마(테이블·RLS·RPC)
 docs/feedback.html           피드백 웹 대시보드(로컬 HTML)
 docs/privacy-policy.md/.html 개인정보 처리방침
-scripts/verify-*.ts          순수 로직 검증(20종, 전부 통과 필수)
+scripts/verify-*.ts          순수 로직 검증(22종, 전부 통과 필수)
 assets/accident-zones.json   전국 사고다발지 12,780건(원본, 수정 금지)
 ```
 
-## 10. 검증 스크립트 목록(20종)
-verify-wss-example, verify-grade, verify-feedback, verify-grid, verify-audio-ear-mapping, verify-geofence-selection, verify-session-reducer, verify-overlap-geometry, verify-dedup, verify-segment-key, verify-overlap-render, verify-api-key, verify-supabase-stats, verify-motion-classifier, verify-weekly, verify-agegroup-stats, verify-usage-classification, verify-usage-wss, verify-interaction-tracker, verify-posture-math.
+## 10. 검증 스크립트 목록(22종)
+verify-agegroup-stats, verify-api-key, verify-audio-ear-mapping, verify-dedup, verify-feedback, verify-geofence-selection, verify-grade, verify-grid, verify-interaction-tracker, verify-motion-classifier, verify-overlap-geometry, verify-overlap-render, verify-posture-math, verify-posture-usage, verify-segment-key, verify-session-reducer, verify-supabase-stats, verify-usage-classification, verify-usage-wss, verify-use-ratio, verify-weekly, verify-wss-example.
 실행: `env -u NODE_OPTIONS node --experimental-strip-types scripts/verify-<name>.ts`
 
 ---
 
 ## 11. 다른 AI에게 (요청 요약)
-이 문서의 **7절(스마트폰 사용 추정)**이 지금 가장 풀고 싶은 문제입니다. iOS 제약 안에서 "보행 측정 시작 후, 사용자가 화면을 보며 걷고 있는지"를 **여러 센서 단서를 조합해 신뢰도 있게 추정**하는 방법을, 우리가 놓친 대안까지 포함해 제안해 주세요. 정직성 원칙(휴리스틱임을 인정, 가짜 데이터·미검증 예측 금지)과 순수 함수 검증 가능성(verify 스크립트)을 지켜야 합니다.
+이 문서의 **7절(스마트폰 사용 추정)**은 이제 자세 기반 감지(걷는 중 pitch>=10도 3초 지속=use, 그 외/센서 공백=no-use)로 채택되어 WSS 감점을 구동합니다. 남은 검토 포인트는 (1) 자세 단일 신호를 다중 사용자로 일반화할 때의 임계 재보정, (2) iOS 백그라운드 모션 연속성(7.1a, 코드로 미보장 · 온디바이스 검증 항목)의 개선 여지, (3) 오탐/미탐을 더 줄일 추가 신호 조합입니다. 정직성 원칙(휴리스틱임을 인정, 가짜 데이터·미검증 예측 금지)과 순수 함수 검증 가능성(verify 스크립트)을 지켜야 합니다.

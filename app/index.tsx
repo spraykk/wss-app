@@ -7,6 +7,7 @@ import { useWalkSession } from '../src/hooks/useWalkSession';
 import { computeWSS } from '../src/wss/engine';
 import { useAudioEnvironment } from '../src/sensors/useAudioEnvironment';
 import { isEarEffectivelyOccluded } from '../src/sensors/audioState';
+import { formatUseRatioPercent } from '../src/wss/useRatio';
 import { palette, spacing, radius, font, shadow } from '../src/theme';
 
 export default function HomeScreen() {
@@ -38,6 +39,14 @@ export default function HomeScreen() {
             {danger ? '주의: 위험 수준입니다' : '안전하게 걷고 있어요'}
           </Text>
         </View>
+      </View>
+
+      {/* FEAT-004: 진행 중 세션의 실시간 사용 비율. 별도 측정 타이머 없이
+          useWalkSession 의 기존 1s VIEW 폴링으로 갱신되는 segments -> computeWSS(wss)
+          값을 그대로 읽어 표시한다. usageRatio = 감지된 사용 시간 / 총 보행 시간. */}
+      <View style={styles.useRatioChip}>
+        <Text style={styles.useRatioLabel}>휴대폰 보며 걸은 비율</Text>
+        <Text style={styles.useRatioValue}>{formatUseRatioPercent(wss.usageRatio)}</Text>
       </View>
 
       <View style={styles.audioChip}>
@@ -94,6 +103,19 @@ const styles = StyleSheet.create({
   badgeText: { fontSize: font.small, fontWeight: '700' },
   badgeTextSafe: { color: palette.safeText },
   badgeTextDanger: { color: palette.dangerText },
+  useRatioChip: {
+    alignSelf: 'stretch',
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    backgroundColor: palette.surface,
+    borderRadius: radius.md,
+    paddingVertical: spacing.md,
+    paddingHorizontal: spacing.lg,
+    ...shadow.card,
+  },
+  useRatioLabel: { fontSize: font.label, color: palette.textMuted, fontWeight: '700' },
+  useRatioValue: { fontSize: font.title, color: palette.skyDeep, fontWeight: '800' },
   audioChip: {
     alignSelf: 'stretch',
     backgroundColor: palette.surfaceAlt,
