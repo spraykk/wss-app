@@ -4,7 +4,7 @@ import MapView, { Circle, Marker, PROVIDER_GOOGLE } from 'react-native-maps';
 import type { Region } from 'react-native-maps';
 import * as Location from 'expo-location';
 import type { AccidentZone } from '../src/types';
-import { computeOverlapCounts, loadRawAccidentZones } from '../src/data/accidentZones';
+import { computeOverlapCounts, loadRawAccidentZones, ZONE_RADIUS_SCALE } from '../src/data/accidentZones';
 import { palette, spacing, radius, font, shadow } from '../src/theme';
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -104,12 +104,24 @@ export default function MapScreen() {
   }, []);
 
   // 화면에 실제로 그릴 subset(뷰포트 필터 + 하드 상한). region/zones 변경 시에만 재계산.
+  // 지도는 성능상 dedup 을 생략한 raw 경로(loadRawAccidentZones)를 쓰므로 postProcessZones
+  // 의 반경 축소(ZONE_RADIUS_SCALE)가 적용되지 않은 원본 radiusMeters 를 가진다. 표시 반경이
+  // 점수 경로(postProcessZones)와 동일하게 축소되도록, 여기서 radiusMeters 에 스케일을 곱한
+  // subset 을 만들어 원 렌더와 겹침 계산 모두 이 축소 반경을 기준으로 삼는다(시각/설명 일치).
   const visibleZones = useMemo(
-    () => (zones ? selectVisibleZones(zones, region) : []),
+    () =>
+      zones
+        ? selectVisibleZones(zones, region).map((z) => ({
+            ...z,
+            radiusMeters: z.radiusMeters * ZONE_RADIUS_SCALE,
+          }))
+        : [],
     [zones, region]
   );
 
   // 겹침 개수는 "그리는 subset(수백 개)" 에 대해서만 계산한다(전역 O(n^2) 제거).
+  // visibleZones 는 이미 축소 반경(ZONE_RADIUS_SCALE 적용)이므로, 겹침 판정도 표시 원과
+  // 동일한 반경 기준으로 이뤄져 "겹쳐 보이는데 카운트는 미축소" 불일치가 생기지 않는다.
   const overlapCounts = useMemo(() => computeOverlapCounts(visibleZones), [visibleZones]);
 
   const goToMyLocation = async () => {
