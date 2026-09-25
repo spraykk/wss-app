@@ -36,6 +36,8 @@ import {
   makeGeofenceSessionCallbacks,
   resetSessionTaskState,
 } from '../session/backgroundTask';
+// FEAT-003: 세션 간 인앱 상호작용 증거가 새지 않도록 start()/stop() 에서 초기화한다.
+import { resetInteractions } from '../session/interactionTracker';
 import {
   requestNotificationPermission,
   presentTrackingNotification,
@@ -123,6 +125,7 @@ export function useWalkSession(): UseWalkSession {
       isTracking: true,
     };
     resetSessionTaskState();
+    resetInteractions();
     await saveActiveSession(startedSession);
     if (isMountedRef.current) setSession(startedSession);
 
@@ -151,6 +154,7 @@ export function useWalkSession(): UseWalkSession {
     // 지오펜스/정밀 추적 해제.
     await stopGeofencing();
     resetSessionTaskState();
+    resetInteractions();
 
     // "측정 중" 지속 알림을 제거한다(실패해도 종료 흐름을 막지 않는다).
     void dismissTrackingNotification().catch(() => {});

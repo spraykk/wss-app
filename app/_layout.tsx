@@ -1,9 +1,13 @@
 // expo-router 루트 레이아웃 (Stack)
 // RN/Expo 런타임에서만 동작하며 샌드박스에서는 실행되지 않는다.
 import { useEffect, useState } from 'react';
+import { View } from 'react-native';
 import { Stack, useRouter, useSegments } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { palette } from '../src/theme';
+// FEAT-003 (Option A - Step 1): confirmedUse(확인된 사용)의 유일한 증거 소스.
+// 루트에서 캡처 단계 터치 핸들러로 "실제 인앱 상호작용" 시각을 기록한다.
+import { recordInteraction } from '../src/session/interactionTracker';
 // FEAT-004: 백그라운드 세션 파이프라인/지오펜스 태스크를 전역 스코프에서 등록한다.
 // TaskManager.defineTask 는 Expo 요구상 모듈 로드 시점(전역)에서 정의되어야 하므로,
 // 이 두 모듈을 import 하는 것만으로 태스크가 등록된다(사이드이펙트 import).
@@ -59,8 +63,23 @@ export default function RootLayout() {
     }
   }, [onboardingDone, segments, router]);
 
+  // FEAT-003: 루트 View 에 캡처 단계 터치 핸들러를 걸어, 어떤 화면(ScrollView/
+  // TouchableOpacity 등)에서든 실제 사용자 상호작용이 시작될 때 recordInteraction() 을
+  // 호출한다. onStartShouldSetResponderCapture 는 캡처 단계에서 "터치 시작"을 관측만 하고
+  // false 를 돌려주어 responder 권한을 가져가지 않으므로 자식 터치를 절대 막지 않는다.
+  // 정직성: 이 신호는 앱이 "포그라운드"일 때만 발생한다. 백그라운드/타앱 사용 시간은
+  // 여기서 관측되지 않으며, 그 시간은 usageClassification.ts 에서 unknownUse 로 처리된다.
+  const onTouchCapture = (): boolean => {
+    recordInteraction();
+    return false; // responder 권한을 가져가지 않음 -> 자식 터치 그대로 통과.
+  };
+
   return (
-    <>
+    <View
+      style={{ flex: 1 }}
+      onStartShouldSetResponderCapture={onTouchCapture}
+      onMoveShouldSetResponderCapture={onTouchCapture}
+    >
       <StatusBar style="dark" />
       <Stack
         screenOptions={{
@@ -79,6 +98,6 @@ export default function RootLayout() {
         <Stack.Screen name="onboarding/index" options={{ headerShown: false }} />
         <Stack.Screen name="onboarding/permissions" options={{ headerShown: false }} />
       </Stack>
-    </>
+    </View>
   );
 }

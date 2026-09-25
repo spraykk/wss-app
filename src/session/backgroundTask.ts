@@ -18,6 +18,7 @@
 //
 // TaskManager.defineTask 는 Expo 요구상 모듈 전역 스코프에서 등록되어야 하며, 앱이
 // 이 모듈을 import 하는 것(app/_layout.tsx)만으로 등록된다.
+import { AppState } from 'react-native';
 import * as Location from 'expo-location';
 import * as TaskManager from 'expo-task-manager';
 import type { AccidentZone } from '../types';
@@ -36,6 +37,8 @@ import { readAudioEnvironmentSnapshot } from '../sensors/useAudioEnvironment';
 import { isEarEffectivelyOccluded } from '../sensors/audioState';
 import { classifyMotion, createInitialMotionState } from '../sensors/motionClassifier';
 import type { MotionState } from '../sensors/motionClassifier';
+import { classifyInterval } from './usageClassification';
+import { hadRecentInteraction } from './interactionTracker';
 
 // 세션 파이프라인 백그라운드 태스크 이름. TaskManager.defineTask 는 모듈 로드 시 1회만
 // 정의되어야 하므로 모듈 스코프 상수로 둔다. 지오펜스 태스크(GEOFENCE_TASK_NAME)와는
@@ -103,17 +106,38 @@ export async function processLocationSample(
   const isEarOccluded = isEarEffectivelyOccluded(audioEnv);
   const timeBand = getCurrentTimeBand(now);
 
-  // 스마트폰 사용 시간은 "화면을 보며 걷는" 시간의 근사다. 정밀 스크린온 감지는
-  // 커스텀 네이티브(FEAT-005)에서 배선되며, 그때까지는 경과 보행시간 전체를 사용시간의
-  // best-effort 로 취급한다(활성 세션 = 사용자가 앱/화면과 상호작용 중일 가능성이 큼).
+  // 스마트폰 사용 시간(증거 기반 분류 - Option A Step 1). 예전에는 경과 보행시간 전체를
+  // 곧바로 smartphoneUseMinutes 로 취급했다("활성 세션 = 사용자가 앱/화면을 보는 중일 것"
+  // 이라는 가정). 이는 주머니에 넣고 걸어도 전 구간이 사용으로 감점되는 근본 오류였다.
+  // 이제는 이 구간의 "증거"를 모아 classifyInterval 로 정확히 하나의 밴드로 분류한다:
+  //  - appForeground: 앱이 포그라운드('active')인가. 백그라운드면 화면/타앱 사용을 관측 불가.
+  //  - hadRecentInteraction: 확인 창 안에 실제 인앱 터치/스크롤이 있었는가(유일한 확인 증거).
+  //  - sensorStale: Step 1 에서는 항상 false. (센서 staleness 훅은 이후 단계에서 배선한다.)
+  // 정직성 한계: confirmedUse 는 본질적으로 "포그라운드 인앱 상호작용" 시간이다. 백그라운드
+  // 구간은 AppState 가 'active' 가 아니므로 unknownUse 로 분류된다(올바른 정직한 동작).
+  // 또한 estimatedUse(자세 추정)는 Step 1 에서 감점하지 않는다(별도 향후 과제 - Step 2).
+  const appForeground = AppState.currentState === 'active';
+  const bands = classifyInterval(
+    {
+      appForeground,
+      hadRecentInteraction: hadRecentInteraction(now.getTime()),
+      sensorStale: false, // Step 1: 센서 staleness 는 아직 배선하지 않음(이후 단계).
+    },
+    elapsedMinutes
+  );
   const sample: WalkContextSample = {
     zoneId,
     riskIntensity,
     weather,
     isEarOccluded,
-    smartphoneUseMinutes: elapsedMinutes,
+    // 레거시 소비자/reduce 누적 호환을 위해 smartphoneUseMinutes 는 confirmedUse 를 미러링한다.
+    smartphoneUseMinutes: bands.confirmedUseMinutes,
     walkMinutes: elapsedMinutes,
     timeBand,
+    confirmedUseMinutes: bands.confirmedUseMinutes,
+    estimatedUseMinutes: bands.estimatedUseMinutes,
+    unknownUseMinutes: bands.unknownUseMinutes,
+    noUseMinutes: bands.noUseMinutes,
   };
 
   // 4) 순수 리듀서로 누적 -> 지속.

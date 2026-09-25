@@ -185,6 +185,41 @@ export default function ReportScreen() {
         </View>
       )}
 
+      {/* FEAT-003 (Option A - Step 1): '측정 불충분' 정직성 안내.
+          latest.measurementInsufficient 가 true 일 때만 렌더한다. 모든 읽기는 null/undefined
+          가드를 두어, 이 필드가 없는 과거 이력 행은 예전과 완전히 동일하게 렌더된다. */}
+      {latest && latest.measurementInsufficient === true ? (
+        <View style={styles.insufficientCard}>
+          <Text style={styles.insufficientTitle}>⚠️ 측정 불충분</Text>
+          <Text style={styles.insufficientBody}>
+            이번 보행의 상당 부분을 관측하지 못했어요(앱이 백그라운드였거나 화면과의
+            상호작용이 확인되지 않은 시간). 관측하지 못한 시간은 "안전하게 걸었다"고 단정하지
+            않으므로, 이 점수는 불완전할 수 있어요.
+          </Text>
+          {typeof latest.unknownRatio === 'number' && Number.isFinite(latest.unknownRatio) ? (
+            <Text style={styles.insufficientMeta}>
+              미관측 비율 약 {Math.round(latest.unknownRatio * 100)}%
+            </Text>
+          ) : null}
+          {latest.usageBands ? (
+            <View style={styles.bandBreakdown}>
+              <Text style={styles.bandRow}>
+                확인된 사용 {Math.round(latest.usageBands.confirmedUseMinutes)}분
+              </Text>
+              <Text style={styles.bandRow}>
+                추정 사용(감점 안 함) {Math.round(latest.usageBands.estimatedUseMinutes)}분
+              </Text>
+              <Text style={styles.bandRow}>
+                미관측 {Math.round(latest.usageBands.unknownUseMinutes)}분
+              </Text>
+              <Text style={styles.bandRow}>
+                미사용 {Math.round(latest.usageBands.noUseMinutes)}분
+              </Text>
+            </View>
+          ) : null}
+        </View>
+      ) : null}
+
       <View style={styles.card}>
         <Text style={styles.title}>주간 일별 점수</Text>
         <Text style={styles.muted}>최근 7일, 하루의 마지막 보행 점수 기준</Text>
@@ -463,4 +498,17 @@ const styles = StyleSheet.create({
   },
   feedbackTitle: { fontSize: font.subtitle, fontWeight: '800' },
   feedbackMessage: { fontSize: font.body, lineHeight: 22, fontWeight: '600' },
+  // FEAT-003: '측정 불충분' 안내 카드(주의 톤). 기존 스타일 토큰만 사용.
+  insufficientCard: {
+    padding: spacing.lg,
+    borderRadius: radius.md,
+    backgroundColor: palette.cautionBg,
+    gap: spacing.xs,
+    ...shadow.card,
+  },
+  insufficientTitle: { fontSize: font.subtitle, fontWeight: '800', color: palette.cautionText },
+  insufficientBody: { fontSize: font.body, lineHeight: 22, color: palette.cautionText },
+  insufficientMeta: { fontSize: font.small, fontWeight: '700', color: palette.cautionText, marginTop: spacing.xs },
+  bandBreakdown: { marginTop: spacing.sm, gap: spacing.xs },
+  bandRow: { fontSize: font.small, color: palette.cautionText },
 });

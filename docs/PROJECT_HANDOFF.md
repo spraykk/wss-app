@@ -135,15 +135,21 @@ belowCriticalThreshold = rawScore < 60
 
 ## 7. ★ 미해결 과제 A — 스마트폰 사용(화면 보며 걷기) 추정 [핵심 검토 요청]
 
-### 7.1 현재 상태 (문제)
-`backgroundTask.ts`에서 스마트폰 사용 시간을 이렇게 근사하고 있다:
+### 7.1 현재 상태 (Step 1 구현됨 — 과거 근사 제거)
+**과거 문제(제거됨)**: 예전 `backgroundTask.ts`는 스마트폰 사용 시간을 이렇게 근사했다.
 ```ts
-smartphoneUseMinutes: elapsedMinutes,   // = 걸은 시간 전체
+smartphoneUseMinutes: elapsedMinutes,   // = 걸은 시간 전체 (제거됨)
 walkMinutes: elapsedMinutes,
 ```
-즉 **"보행 측정을 시작한 뒤 걷는 시간 전체를 무조건 '스마트폰 사용 중'으로 간주"**한다. 화면이 켜졌는지/꺼졌는지, 사용자가 화면을 보는지 전혀 감지하지 않는다.
+즉 **"보행 측정을 시작한 뒤 걷는 시간 전체를 무조건 '스마트폰 사용 중'으로 간주"**했다. 주머니에 넣고 걷는 사람도 전 구간이 감점되는 명백한 오류였다("이걸 누가 쓰냐").
 
-이는 명백히 부정확하다. 주머니에 넣고 걷는 사람도 계속 감점되므로, "이걸 누가 쓰냐"는 개발자의 정당한 지적이 있었다. **측정 시작 후, 보행자가 실제로 화면을 보며 걷고 있는지를 여러 단서로 추정해 `smartphoneUseMinutes`를 산정하는 것이 목표.**
+**Step 1 (구현 완료 — Option A 증거 밴드 분류)**: 이제 걷는 각 구간의 경과 시간을 "증거 강도"에 따라 네 밴드(confirmedUse/estimatedUse/unknownUse/noUse) 중 정확히 하나로 배정한다(`src/session/usageClassification.ts`). 채점은 **confirmedUse(확인된 사용)만 감점**한다.
+- **confirmedUse = 실제 인앱 터치/스크롤 시간**: 루트 레이아웃(`app/_layout.tsx`)의 캡처 단계 터치 핸들러가 실제 상호작용 시각을 기록하고(`src/session/interactionTracker.ts`, 확인 창 `CONFIRMED_USE_WINDOW_MS`=60초), 백그라운드 태스크가 그 구간을 confirmedUse 로 분류한다.
+- **한계(정직성)**: confirmedUse 는 본질적으로 **"우리 앱이 포그라운드일 때의 인앱 상호작용" 시간**이다. 앱이 백그라운드이거나 사용자가 다른 앱을 보는 시간은 iOS 제약상 관측할 수 없어 **unknownUse**(모름)로 둔다. 사용/무사용을 단정하지 않는다.
+- **'측정 불충분' 정직성 정책**: 보행 중 미관측(unknown) 비율이 높으면(`UNKNOWN_RATIO_INSUFFICIENT_THRESHOLD`=0.5, 설계값) `measurementInsufficient`=true 로 표시하고, 리포트(`app/report.tsx`)에 '측정 불충분' 안내를 띄운다. 관측하지 못한 시간을 "안전하게 걸었다"고 가정해 좋은 점수를 주지 않는다.
+- **estimatedUse(자세 추정)는 Step 1 에서 감점하지 않는다**: 필드/파이프라인만 준비되어 있고 항상 0 이다. 자세 기반 추정은 아래 **Step 2 (별도 향후 과제)**이다.
+
+**목표(남은 부분 = Step 2)**: 인앱 상호작용만으로는 "다른 앱을 보며 걷는" 사용을 못 잡는다. 보행자가 화면을 보며 걷는지를 모션 자세 등 여러 단서로 추정해 `estimatedUse`를 채우는 것이 **Step 2** 이며, 이는 아직 감점에 반영되지 않는 별도 과제다.
 
 ### 7.2 iOS의 근본 제약 (반드시 고려)
 - iOS는 **백그라운드 앱에게 "화면이 켜져 있는지(스크린 온/오프)"를 알려주지 않는다.** 개인정보 보호 정책상 지속 조회 API가 막혀 있다.
@@ -152,8 +158,8 @@ walkMinutes: elapsedMinutes,
 - **`UIScreen.brightness`(밝기)는 우리 앱이 포그라운드일 때만 신뢰 가능**하고, 백그라운드에서는 갱신이 안 되거나 마지막 값이 굳는다.
 - **Always-On Display(AOD, iPhone 14 Pro+)** 때문에 "밝기 > 0 = 화면 켜짐" 판정은 오판이 난다(꺼진 상태에서도 저휘도로 켜져 있음). → **밝기 단독 판정은 부적절.**
 
-### 7.3 현재 검토 중인 방향 (개발자와 합의한 잠정안)
-직접 감지가 막혀 있으니, **"화면을 보며 걷는 사람의 행동 패턴"을 여러 신호로 조합해 추정**한다:
+### 7.3 Step 2 방향 (자세 추정 estimatedUse — 아직 감점하지 않는 별도 과제)
+Step 1(인앱 상호작용 = confirmedUse)은 구현되었으나, 직접 화면 감지가 막혀 있으니 **"화면을 보며 걷는 사람의 행동 패턴"을 여러 신호로 조합해 추정**해 `estimatedUse`를 채우는 것이 Step 2 이다(현재는 항상 0, 감점 안 함):
 
 | 단서 | 활용 | 신뢰도 |
 |------|------|--------|
@@ -184,7 +190,8 @@ walkMinutes: elapsedMinutes,
 - [ ] 최신 코드로 새 preview 빌드 → 실기기 설치 → 검증(빨간원 절반/온보딩 루프 해소/막대그래프/의견전송/연령대).
 
 ### 기능 (이 문서의 주 검토 대상)
-- [ ] **★ 미해결 과제 A: 스마트폰 사용 추정** (7절) — 설계·구현.
+- [x] **★ 미해결 과제 A — Step 1: 증거 밴드 분류(confirmedUse = 실제 인앱 터치/스크롤, confirmedUse 만 감점, '측정 불충분' 정책)** (7절) — 구현 완료.
+- [ ] **★ 미해결 과제 A — Step 2: 자세/모션 기반 estimatedUse 추정** (7.3절) — 별도 향후 과제(아직 감점 안 함).
 
 ### 출시 마무리
 - [ ] 앱 아이콘 PNG 확정(현재 SVG. 하늘색 파스텔 배경+흰 발자국 시안 있으나 PNG 변환 보류 상태).
@@ -212,7 +219,9 @@ src/data/
   apiKey.ts         API 키 정규화(한 번만 인코딩)
   overlapGeometry.ts / overlapRender.ts  겹침 기하
 src/session/
-  backgroundTask.ts 백그라운드 세션 파이프라인(★ smartphoneUseMinutes 근사 위치)
+  backgroundTask.ts 백그라운드 세션 파이프라인(★ classifyInterval 로 증거 밴드 분류)
+  usageClassification.ts [Step 1] 증거 밴드(confirmed/estimated/unknown/noUse) 순수 분류
+  interactionTracker.ts  [Step 1] 인앱 터치/스크롤 시각 기록(confirmedUse 증거 소스)
   sessionReducer.ts 순수 세그먼트 누적 리듀서
   sessionStore.ts   활성 세션 지속(AsyncStorage)
   weatherCache.ts   날씨 TTL 캐시
