@@ -92,6 +92,17 @@ assert('문자열 숫자 정규화: count=9', stringy?.sampleCount === 9);
 assert('문자열 숫자 정규화: mean=82.5', stringy?.meanScore === 82.5);
 assert('문자열 표본 9 -> 표시 가능', hasEnoughStats(stringy) === true);
 
+// (g) 연령대 밴드별 통계(fetchStatsByAge)도 get_wss_stats_by_age RPC 가 같은 모양
+//     (sample_count/mean_score/q3_score)을 반환하므로 동일한 parseStatsRow 계약을 쓴다.
+//     밴드 그룹 표본이 없거나 <5 이면 전체 통계와 똑같이 정직하게 표시하지 않는다.
+const byAgeEmpty = parseStatsRow([{ sample_count: 0, mean_score: null, q3_score: null }]);
+assert('밴드 표본 없음 -> 표시 불가', hasEnoughStats(byAgeEmpty) === false);
+const byAgeFew = parseStatsRow([{ sample_count: 3, mean_score: 77, q3_score: 85 }]);
+assert('밴드 표본 3(<5) -> 표시 불가(부족)', hasEnoughStats(byAgeFew) === false);
+const byAgeOk = parseStatsRow([{ sample_count: 6, mean_score: 79.5, q3_score: 88 }]);
+assert('밴드 표본 6 -> 표시 가능', hasEnoughStats(byAgeOk) === true);
+assert('밴드 통계 mean 정규화=79.5', byAgeOk?.meanScore === 79.5);
+
 if (failures > 0) {
   console.log(`\n${failures} assertion(s) FAILED`);
   process.exit(1);

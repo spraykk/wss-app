@@ -11,6 +11,7 @@ import {
   View,
 } from 'react-native';
 import { getOrCreateDeviceId } from '../src/storage/deviceId';
+import { getAgeBand } from '../src/storage/ageBand';
 import { submitFeedbackDetailed } from '../src/data/supabase';
 import type { FeedbackCategory, SubmitResult } from '../src/data/supabase';
 import { palette, spacing, radius, font, shadow } from '../src/theme';
@@ -77,12 +78,16 @@ export default function FeedbackScreen() {
     setErrorText(null);
     try {
       const deviceId = await getOrCreateDeviceId();
+      // 온보딩에서 1회 선택한 연령대 밴드를 자동으로 첨부한다(미선택이면 null).
+      // 피드백 화면에는 별도의 연령대 UI 를 두지 않는다(밴드는 온보딩에서만 선택).
+      const ageBand = await getAgeBand();
       const result = await submitFeedbackDetailed({
         category,
         rating,
         message: trimmed,
         appVersion,
         deviceId,
+        ageBand,
       });
       if (result.ok) {
         // 성공: 폼 초기화 후 감사 메시지 표시.

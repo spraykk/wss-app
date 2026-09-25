@@ -13,6 +13,12 @@
 // 로드한다(apiKey.ts 와 동일한 이유). 이렇게 해야 이 모듈을 참조하는 순수 코드나
 // 검증 스크립트가 node_modules 없는 샌드박스에서 모듈 해석 오류를 일으키지 않는다.
 
+// 익명 연령대(밴드). 정확한 나이가 아니라 5개 밴드 중 하나이며, 미선택은 null.
+// 스키마 check 제약(age_band is null or age_band in (...))과 문자열이 정확히 일치한다.
+// src/storage/ageBand.ts 의 AgeBand 와 동일한 문자열 집합을 서버 페이로드용으로 재선언한다
+// (해당 모듈은 AsyncStorage 정적 import 가 있어 이 서버 I/O 모듈에서 재사용하지 않는다).
+export type AgeBandValue = '10s' | '20s' | '30s' | '40s' | '50plus';
+
 // 서버로 올리는 최소 페이로드. 이 외의 필드는 존재하지 않는다.
 export interface WssScoreUpload {
   deviceId: string;
@@ -20,6 +26,8 @@ export interface WssScoreUpload {
   displayScore: number;
   /** yyyy-mm-dd */
   dateISO: string;
+  /** 익명 연령대 밴드(선택). 미선택/미상이면 null(온보딩에서 1회만 선택). */
+  ageBand?: AgeBandValue | null;
 }
 
 // get_wss_stats RPC 결과. 표본이 없으면 mean/q3 는 null 이다.
@@ -43,6 +51,8 @@ export interface FeedbackSubmission {
   appVersion: string | null;
   /** 익명 기기 UUID(src/storage/deviceId.ts 재사용). */
   deviceId: string;
+  /** 익명 연령대 밴드(선택). 미선택/미상이면 null(온보딩에서 1회만 선택). */
+  ageBand?: AgeBandValue | null;
 }
 
 // env 또는 expo-constants.extra 에서 문자열 값을 읽는다(apiKey.ts 패턴 재사용).
@@ -150,6 +160,8 @@ export async function uploadScore(payload: WssScoreUpload): Promise<boolean> {
           device_id: payload.deviceId,
           display_score: payload.displayScore,
           date_iso: payload.dateISO,
+          // 익명 연령대 밴드(선택). 미선택이면 null 로 저장(스키마 check 가 null 허용).
+          age_band: payload.ageBand ?? null,
         },
         { onConflict: 'device_id,date_iso' }
       ),
@@ -253,6 +265,8 @@ export async function submitFeedbackDetailed(
         rating: payload.rating,
         message,
         app_version: payload.appVersion,
+        // 익명 연령대 밴드(선택). 미선택이면 null(스키마 check 가 null 허용).
+        age_band: payload.ageBand ?? null,
       }),
       NETWORK_TIMEOUT_MS
     );
@@ -291,27 +305,61 @@ export async function fetchStats(): Promise<WssStats | null> {
     if (result === TIMEOUT) return null;
     const { data, error } = result;
     if (error) return null;
-    // RPC 는 단일 행 테이블을 반환한다. 배열/객체 양쪽 모양을 방어적으로 처리한다.
-    const row = (Array.isArray(data) ? data[0] : data) as
-      | { sample_count?: unknown; mean_score?: unknown; q3_score?: unknown }
-      | null
-      | undefined;
-    if (!row) return null;
-    const sampleCount = Number(row.sample_count ?? 0);
-    if (!Number.isFinite(sampleCount)) return null;
-    const meanScore =
-      row.mean_score === null || row.mean_score === undefined
-        ? null
-        : Number(row.mean_score);
-    const q3Score =
-      row.q3_score === null || row.q3_score === undefined
-        ? null
-        : Number(row.q3_score);
-    return {
-      sampleCount,
-      meanScore: meanScore !== null && Number.isFinite(meanScore) ? meanScore : null,
-      q3Score: q3Score !== null && Number.isFinite(q3Score) ? q3Score : null,
-    };
+    return parseStatsRow(data);
+  } catch {
+    return null;
+  }
+}
+
+// RPC 단일 행(get_wss_stats / get_wss_stats_by_age 는 같은 모양을 반환)을 WssStats 로
+// 방어적으로 변환한다. 배열/객체 양쪽 모양, Number 정규화, null 처리를 fetchStats 와
+// 완전히 동일하게 유지한다(verify-supabase-stats.ts 가 이 계약을 재현해 검증한다).
+function parseStatsRow(data: unknown): WssStats | null {
+  const row = (Array.isArray(data) ? data[0] : data) as
+    | { sample_count?: unknown; mean_score?: unknown; q3_score?: unknown }
+    | null
+    | undefined;
+  if (!row) return null;
+  const sampleCount = Number(row.sample_count ?? 0);
+  if (!Number.isFinite(sampleCount)) return null;
+  const meanScore =
+    row.mean_score === null || row.mean_score === undefined
+      ? null
+      : Number(row.mean_score);
+  const q3Score =
+    row.q3_score === null || row.q3_score === undefined
+      ? null
+      : Number(row.q3_score);
+  return {
+    sampleCount,
+    meanScore: meanScore !== null && Number.isFinite(meanScore) ? meanScore : null,
+    q3Score: q3Score !== null && Number.isFinite(q3Score) ? q3Score : null,
+  };
+}
+
+// 특정 연령대 밴드의 그룹 통계를 RPC(get_wss_stats_by_age)로 조회한다.
+// fetchStats 와 동일한 방어적 파싱/타임아웃/미설정 no-op 규칙을 그대로 따른다.
+// 정직성 원칙: RPC 는 원시 표본수를 그대로 반환하고, <5 판단은 클라이언트가 한다.
+export async function fetchStatsByAge(ageBand: string): Promise<WssStats | null> {
+  const client = getClient() as
+    | {
+        rpc: (
+          fn: string,
+          params: Record<string, unknown>
+        ) => Promise<{ data: unknown; error: unknown }>;
+      }
+    | null;
+  if (!client) return null;
+  try {
+    const result = await withTimeout(
+      client.rpc('get_wss_stats_by_age', { p_age_band: ageBand }),
+      NETWORK_TIMEOUT_MS
+    );
+    // 타임아웃이면 통계 없음으로 처리(null).
+    if (result === TIMEOUT) return null;
+    const { data, error } = result;
+    if (error) return null;
+    return parseStatsRow(data);
   } catch {
     return null;
   }

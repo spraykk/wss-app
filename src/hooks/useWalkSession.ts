@@ -43,6 +43,7 @@ import {
 } from '../notifications/alerts';
 import { saveResult } from '../storage/history';
 import { getOrCreateDeviceId } from '../storage/deviceId';
+import { getAgeBand } from '../storage/ageBand';
 import { uploadScore } from '../data/supabase';
 
 // 로컬 날짜를 yyyy-mm-dd 로 만든다(시각/타임존은 서버에 보내지 않는다).
@@ -173,7 +174,10 @@ export function useWalkSession(): UseWalkSession {
       void (async () => {
         try {
           const deviceId = await getOrCreateDeviceId();
-          await uploadScore({ deviceId, displayScore, dateISO });
+          // 온보딩에서 1회 선택한 연령대 밴드를 함께 보낸다(미선택이면 null).
+          // 그룹 비교 통계 용도이며, 위치·경로 등은 여전히 전송하지 않는다.
+          const ageBand = await getAgeBand();
+          await uploadScore({ deviceId, displayScore, dateISO, ageBand });
         } catch {
           // 업로드 실패는 조용히 무시한다(부가기능).
         }
