@@ -1,23 +1,33 @@
 // 주간 일별 대표 점수 집계 (순수 함수)
 //
 // 목적: 최근 7일(오늘 포함, 오늘 기준 이전 6일)의 "하루 대표 점수"를 막대그래프용으로 만든다.
-// 하루의 대표값 = 그날의 "마지막(가장 최근)" 보행의 displayScore. 보행이 없는 날은 null(빈 막대).
+// 하루의 대표값 = 그날 유한 점수 보행들의 "보행 시간 가중평균"이다:
+//   rep = Σ(displayScore_i × w_i) / Σ(w_i),  w_i = 그 보행의 walkMinutes(확정 보행 시간).
+// 즉 오래 걸은 보행일수록 그날 대표 점수에 더 큰 영향을 준다(짧게 잠깐 걸은 보행이 하루 점수를
+// 통째로 대표하던 예전 '마지막 보행' 방식의 왜곡을 바로잡는다). 보행이 없는 날은 null(빈 막대).
 //
 // 순수/제약: RN·AsyncStorage·node:* import 금지. 지역화(locale) 라이브러리 없이 문자열/Date
 // 산술만 사용한다. 이 파일은 지울 수 있는(erasable-only) TS 여야 한다(enum/namespace/파라미터
 // 프로퍼티 금지, 상대 import 확장자 금지). scripts/verify-weekly.ts 가 이 계약을 검증한다.
 //
-// "마지막(가장 최근)"의 정의(결정적):
-//   이력(history)은 저장 시 최신순(newest-first)으로 쌓인다(saveResult 가 맨 앞에 prepend,
-//   loadHistory 도 그대로 최신순 반환). 따라서 특정 날짜의 대표 항목은 "최신순으로 훑을 때
-//   그 날짜와 처음 일치하는 항목"이다. 즉 입력을 newest-first 로 간주하는 것이 계약이며,
-//   같은 날짜에 여러 보행이 있으면 배열에서 더 앞(=더 최근)에 있는 항목이 대표가 된다.
+// 가중평균/하위호환 규칙(결정적):
+//   (a) 유한한 displayScore 가 있는 항목만 집계에 포함한다(비유한/누락은 예전과 동일하게 제외).
+//   (b) 가중치는 walkMinutes 가 유한하고 > 0 일 때만 그 값을 쓴다. walkMinutes 가 누락/비유한/
+//       <=0 이면 그 보행의 가중치는 0(가중합에 기여하지 않음).
+//   (c) 등가중 폴백: 어떤 날에 양의 유한 가중치를 가진 항목이 하나도 없으면(예: walkMinutes 필드가
+//       없던 레거시 이력 행들), 그 날은 유한 점수 항목들의 단순 평균으로 대표를 정한다(빈 막대로
+//       가려지지 않도록). 이렇게 walkMinutes 를 몰라도 정직하게 대표를 만든다.
+//   가중평균은 순서 무관이므로 newest-first 여부는 대표 계산에 영향을 주지 않지만, 창(window)
+//   필터와 유한 점수 필터는 그대로 유지된다.
 //   dateISO 가 없는 항목은 특정 날짜에 배치할 수 없으므로 차트 집계에서 무시한다.
 
 // 집계에 필요한 최소 형태만 받는다(WSSResult 를 그대로 넘겨도 호환).
 export interface WeeklyEntry {
   dateISO?: string;
   displayScore: number;
+  /** 그날 대표 가중평균의 가중치 = 확정 보행 시간(분). WSSResult.totalWalkMinutes 를 넘긴다.
+   * 없으면 하위호환 규칙 적용(가중치 0, 그날에 양의 가중치가 없으면 단순 평균으로 폴백). */
+  walkMinutes?: number;
 }
 
 // 하루 슬롯: 날짜와 그날의 대표 점수(없으면 null).
@@ -87,23 +97,54 @@ export function computeWeeklyDaily(
   const indexByDate: Record<string, number> = {};
   for (let i = 0; i < days.length; i += 1) indexByDate[days[i].dateISO] = i;
 
-  // history 를 최신순으로 훑으며 각 날짜의 "처음 만나는(=가장 최근)" 항목을 대표로 채운다.
-  // 이미 채워진 날짜는 건너뛴다(그 뒤에 오는 항목은 더 오래된 것이므로 대표가 아니다).
-  const filled: Record<string, boolean> = {};
+  // 날짜별 누산기: 가중합(weightedSum)/가중치합(weightSum)은 보행시간 가중평균용,
+  // simpleSum/simpleCount 는 양의 가중치가 하나도 없을 때의 등가중(단순 평균) 폴백용이다.
+  interface DayAcc {
+    weightedSum: number;
+    weightSum: number;
+    simpleSum: number;
+    simpleCount: number;
+  }
+  const acc: Record<string, DayAcc> = {};
+
+  // history 를 훑으며 창 안 날짜의 유한 점수 항목을 누적한다. 가중평균은 순서 무관이므로
+  // newest-first 여부는 대표값에 영향을 주지 않는다(창/유한 점수 필터만 유지).
   for (const entry of history) {
     if (!entry || typeof entry.dateISO !== 'string') continue; // dateISO 없는 항목 무시.
     const iso = entry.dateISO;
     const idx = indexByDate[iso];
     if (idx === undefined) continue; // 창 밖의 날짜는 제외.
-    if (filled[iso]) continue; // 이미 더 최근(유한 점수) 항목으로 채워짐.
-    // 계약: 대표는 "그날의 마지막 보행"이되, 유한한 점수가 있어야 대표로 확정한다.
-    // 최신 항목의 점수가 비유한(NaN/Infinity)/누락이면 이 항목은 건너뛰어, 같은 날의
-    // 더 오래된 유한 점수 보행이 대표가 될 수 있게 한다(빈 막대로 가려지지 않도록).
+    // 유한한 displayScore 항목만 집계(비유한/누락은 제외).
     if (typeof entry.displayScore !== 'number' || !Number.isFinite(entry.displayScore)) {
       continue;
     }
-    days[idx].score = entry.displayScore;
-    filled[iso] = true;
+    const score = entry.displayScore;
+    let a = acc[iso];
+    if (a === undefined) {
+      a = { weightedSum: 0, weightSum: 0, simpleSum: 0, simpleCount: 0 };
+      acc[iso] = a;
+    }
+    // 등가중 폴백용: 유한 점수 항목은 무조건 단순 평균 누산에 포함한다.
+    a.simpleSum += score;
+    a.simpleCount += 1;
+    // 가중치는 walkMinutes 가 유한하고 > 0 일 때만 사용(그 외는 가중치 0 -> 가중합에 미기여).
+    const w = entry.walkMinutes;
+    if (typeof w === 'number' && Number.isFinite(w) && w > 0) {
+      a.weightedSum += score * w;
+      a.weightSum += w;
+    }
+  }
+
+  // 각 날짜 대표값 확정: 양의 가중치가 있으면 보행시간 가중평균, 없으면 단순 평균 폴백.
+  for (const iso of Object.keys(acc)) {
+    const a = acc[iso];
+    const idx = indexByDate[iso];
+    if (idx === undefined) continue;
+    if (a.weightSum > 0) {
+      days[idx].score = a.weightedSum / a.weightSum;
+    } else if (a.simpleCount > 0) {
+      days[idx].score = a.simpleSum / a.simpleCount;
+    }
   }
 
   return days;

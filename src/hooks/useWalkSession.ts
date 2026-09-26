@@ -185,6 +185,10 @@ export function useWalkSession(): UseWalkSession {
       // 보행이 끝난 로컬 날짜를 결과에 도장 찍는다(업로드 date_iso 와 동일 값).
       // 주간 일별 막대그래프가 이 날짜로 하루별 대표 점수를 집계한다.
       const dateISO = toDateISO(new Date());
+      // computed 스프레드가 computeWSS(FEAT-002)의 totalWalkMinutes(확정 보행 시간 합)까지
+      // 그대로 result 에 실어 saveResult 로 history 에 저장한다. 이 값이 (1) 주간 일별 대표
+      // 점수의 보행 시간 가중평균(weekly.ts) 가중치와 (2) 리포트 이력의 총 보행 시간 표기에
+      // 쓰인다. 별도 대입이 필요 없으며(스프레드로 충분), 업로드 payload 에는 추가하지 않는다.
       const result = { ...computed, dateISO };
       await saveResult(result);
 

@@ -65,6 +65,8 @@ function baseSegment(overrides: Record<string, unknown>) {
   assert('(a) enteredHighRiskZoneWhileUsingPhone true', res.enteredHighRiskZoneWhileUsingPhone === true);
   // 밴드 집계에 use=M 반영.
   assert('(a) usageBands.confirmedUseMinutes=M', res.usageBands !== undefined && res.usageBands.confirmedUseMinutes === M, `${res.usageBands?.confirmedUseMinutes}`);
+  // totalWalkMinutes = 세그먼트 walkMinutes 합(=100).
+  assert('(a) totalWalkMinutes = sum of walkMinutes (100)', res.totalWalkMinutes === 100, `${res.totalWalkMinutes}`);
   // (e) 은퇴한 필드는 기록되지 않는다.
   assert('(a) measurementInsufficient undefined', res.measurementInsufficient === undefined, `${res.measurementInsufficient}`);
   assert('(a) unknownRatio undefined', res.unknownRatio === undefined, `${res.unknownRatio}`);
@@ -110,6 +112,16 @@ function baseSegment(overrides: Record<string, unknown>) {
   const raw = 100 - DEDUCTION_SCALE * combined * 9;
   assertClose('(d) rawScore uses use=9', res.rawScore, Math.max(0, Math.min(100, raw)));
   assert('(d) displayScore <= rawScore (penalty applied)', res.displayScore <= res.rawScore, `disp=${res.displayScore} raw=${res.rawScore}`);
+  // totalWalkMinutes = 세그먼트 walkMinutes 합(=10).
+  assert('(d) totalWalkMinutes = sum of walkMinutes (10)', res.totalWalkMinutes === 10, `${res.totalWalkMinutes}`);
+}
+
+// (g) 여러 세그먼트의 walkMinutes 합이 totalWalkMinutes 에 정확히 반영되는지.
+{
+  const s1 = baseSegment({ confirmedUseMinutes: 0, noUseMinutes: 40, walkMinutes: 40, smartphoneUseMinutes: 0 });
+  const s2 = baseSegment({ regionId: 'ref2', confirmedUseMinutes: 0, noUseMinutes: 60, walkMinutes: 60, smartphoneUseMinutes: 0 });
+  const res = computeWSS([s1, s2]);
+  assert('(g) totalWalkMinutes = 40+60 = 100', res.totalWalkMinutes === 100, `${res.totalWalkMinutes}`);
 }
 
 if (failures > 0) {

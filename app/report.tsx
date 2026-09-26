@@ -34,6 +34,20 @@ function dayLabelFromISO(iso: string): string {
   return String(Number(m[1])); // 앞자리 0 제거(예: '09' -> '9')
 }
 
+// 확정 보행 시간(분)을 사람이 읽기 쉬운 '분/초' 문자열로 만든다. locale 라이브러리 없이
+// 순수 Date/숫자 산술만 사용한다(toDateISO/dayLabelFromISO 와 동일한 순수 규칙).
+// 규칙(정직성): undefined/비유한/음수 = '-'(옛 이력 행처럼 값이 없으면 지어내지 않는다).
+//   1분 미만 = 'N초', 정확히 정수 분 = 'N분', 그 외 = 'N분 M초'(초는 반올림).
+function formatWalkMinutes(min: number | undefined): string {
+  if (typeof min !== 'number' || !Number.isFinite(min) || min < 0) return '-';
+  const totalSeconds = Math.round(min * 60);
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  if (minutes === 0) return `${seconds}초`;
+  if (seconds === 0) return `${minutes}분`;
+  return `${minutes}분 ${seconds}초`;
+}
+
 // 통계 표시에 필요한 최소 표본 수. 이보다 적으면(또는 미설정/오류면) 가짜 숫자를
 // 보여주지 않고 "아직 데이터가 부족합니다"로 정직하게 표시한다.
 const MIN_STATS_SAMPLE = 5;
@@ -204,12 +218,12 @@ export default function ReportScreen() {
 
       <View style={styles.card}>
         <Text style={styles.title}>주간 일별 점수</Text>
-        <Text style={styles.muted}>최근 7일, 하루의 마지막 보행 점수 기준</Text>
+        <Text style={styles.muted}>최근 7일, 하루 여러 보행은 보행 시간 가중평균 기준</Text>
         <WeeklyChart days={weekly} />
         {!weeklyHasAny ? (
           <Text style={styles.muted}>
-            아직 이번 주 보행 기록이 없어요. 보행을 완료하면 그날의 마지막 점수가 막대로
-            쌓여요.
+            아직 이번 주 보행 기록이 없어요. 보행을 완료하면 그날의 보행들이 보행 시간
+            가중평균으로 막대에 쌓여요.
           </Text>
         ) : null}
       </View>
@@ -307,6 +321,9 @@ export default function ReportScreen() {
           history.map((h, i) => (
             <View key={i} style={styles.historyRow}>
               <Text style={styles.historyScore}>{Math.round(h.displayScore)}점</Text>
+              {/* 총 보행 시간(확정 보행 시간의 합). totalWalkMinutes 가 없던 과거 이력 행은
+                  formatWalkMinutes 가 '-' 를 돌려준다(정직성: 없는 값을 지어내지 않음). */}
+              <Text style={styles.muted}>보행 {formatWalkMinutes(h.totalWalkMinutes)}</Text>
               <Text style={styles.muted}>raw {h.rawScore.toFixed(1)}</Text>
             </View>
           ))

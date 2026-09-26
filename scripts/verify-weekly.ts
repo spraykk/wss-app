@@ -41,17 +41,88 @@ assert(
 // (f) 빈 이력 -> 7일 모두 null.
 assert('빈 이력 -> 7일 모두 null', emptyWeek.every((d) => d.score === null));
 
-// (a) 같은 날 여러 보행 -> 가장 최근(최신순 배열의 앞쪽) 점수가 대표.
-// 이력은 newest-first 이므로 같은 날짜의 첫 항목(=가장 최근)이 대표가 되어야 한다.
-const multi = computeWeeklyDaily(
+const EPS = 1e-9;
+function assertClose(label: string, actual: number | null, expected: number): void {
+  if (actual !== null && Math.abs(actual - expected) <= EPS) {
+    console.log(`PASS ${label}: ${actual} ~= ${expected}`);
+  } else {
+    console.log(`FAIL ${label}: got ${actual}, expected ${expected}`);
+    failures += 1;
+  }
+}
+
+// (핵심/뮤테이션 민감) 보행시간 가중평균이 last-of-day 와 단순 평균 둘 다와 다른 케이스.
+// 점수 90(walk 1분) + 30(walk 9분) -> 가중평균 = (90*1 + 30*9)/10 = 360/10 = 36.
+//   last-of-day 였다면 90(또는 순서에 따라 30), 단순 평균이면 60 이 되어 모두 36 과 다르다.
+const weighted = computeWeeklyDaily(
   [
-    { dateISO: '2026-03-15', displayScore: 88 }, // 오늘의 가장 최근 -> 대표
-    { dateISO: '2026-03-15', displayScore: 42 }, // 오늘의 더 오래된 것 -> 무시
-    { dateISO: '2026-03-15', displayScore: 10 },
+    { dateISO: '2026-03-15', displayScore: 90, walkMinutes: 1 },
+    { dateISO: '2026-03-15', displayScore: 30, walkMinutes: 9 },
   ],
   TODAY
 );
-assert('같은 날 여러 보행 -> 최신 88 이 대표', multi[6].score === 88);
+assertClose('보행시간 가중평균 = 36 (last=90/simple=60 과 다름)', weighted[6].score, 36);
+assert('가중평균이 last-of-day(90) 이 아님', weighted[6].score !== 90);
+assert('가중평균이 단순 평균(60) 이 아님', weighted[6].score !== 60);
+
+// (i) 단일 보행 -> 그 보행 점수 자체가 대표.
+const single = computeWeeklyDaily(
+  [{ dateISO: '2026-03-15', displayScore: 73, walkMinutes: 5 }],
+  TODAY
+);
+assertClose('단일 보행 -> 그 점수 73', single[6].score, 73);
+
+// (ii) 두 보행 등가중(같은 walkMinutes) -> 단순 평균.
+const equalWeights = computeWeeklyDaily(
+  [
+    { dateISO: '2026-03-15', displayScore: 80, walkMinutes: 4 },
+    { dateISO: '2026-03-15', displayScore: 40, walkMinutes: 4 },
+  ],
+  TODAY
+);
+assertClose('등가중 두 보행 -> 단순 평균 60', equalWeights[6].score, 60);
+
+// (iii) 레거시: walkMinutes 가 모든 항목에 없음 -> 등가중 폴백(단순 평균).
+const legacy = computeWeeklyDaily(
+  [
+    { dateISO: '2026-03-15', displayScore: 90 }, // walkMinutes 없음
+    { dateISO: '2026-03-15', displayScore: 30 }, // walkMinutes 없음
+  ],
+  TODAY
+);
+assertClose('레거시(walkMinutes 없음) -> 단순 평균 60 폴백', legacy[6].score, 60);
+
+// (iii-2) walkMinutes 가 있어도 <=0/비유한이면 가중치 0 -> 그 날에 양의 가중치가 없으면 단순 평균 폴백.
+const nonPositiveWeights = computeWeeklyDaily(
+  [
+    { dateISO: '2026-03-15', displayScore: 100, walkMinutes: 0 },
+    { dateISO: '2026-03-15', displayScore: 50, walkMinutes: Number.NaN },
+  ],
+  TODAY
+);
+assertClose('walkMinutes<=0/비유한만 -> 단순 평균 75 폴백', nonPositiveWeights[6].score, 75);
+
+// (iv) 혼합: 한 항목만 양의 walkMinutes, 다른 항목은 누락 -> 양의 가중치 항목만 가중평균을 구동.
+// 90(walk 2) + 20(walkMinutes 없음) -> weightedSum=180, weightSum=2 -> 180/2 = 90.
+const mixedWeights = computeWeeklyDaily(
+  [
+    { dateISO: '2026-03-15', displayScore: 90, walkMinutes: 2 },
+    { dateISO: '2026-03-15', displayScore: 20 }, // walkMinutes 없음 -> 가중치 0
+  ],
+  TODAY
+);
+assertClose('혼합: 양의 가중치 항목만 가중평균 구동 -> 90', mixedWeights[6].score, 90);
+
+// (a) 같은 날 여러 보행 -> 보행시간 가중평균이 대표(순서 무관).
+const multi = computeWeeklyDaily(
+  [
+    { dateISO: '2026-03-15', displayScore: 88, walkMinutes: 3 },
+    { dateISO: '2026-03-15', displayScore: 40, walkMinutes: 1 },
+  ],
+  TODAY
+);
+// (88*3 + 40*1)/4 = (264+40)/4 = 304/4 = 76.
+assertClose('같은 날 여러 보행 -> 가중평균 76', multi[6].score, 76);
 
 // (b) 보행 없는 날은 null(빈 막대).
 const gaps = computeWeeklyDaily(
@@ -90,39 +161,39 @@ const missing = computeWeeklyDaily(
 assert('dateISO 없는 항목 무시 -> 03-14 만 60', missing[5].score === 60);
 assert('dateISO 없는 항목은 어느 날에도 안 들어감', missing.filter((d) => d.score !== null).length === 1);
 
-// (추가) 입력이 newest-first 계약을 지키면, 배열 앞쪽이 더 최근으로 취급된다.
-// 다른 날짜가 섞여 있어도 각 날짜의 첫 매칭이 대표가 되는지 확인.
+// (추가) 여러 날짜가 섞여 있어도 날짜별로 독립적으로 가중평균이 계산되는지 확인.
+// 03-14: 30(walk 3) + 90(walk 1) -> (90+90)/4 = 45. 03-15: 단일 80(walk 2) -> 80.
 const mixed = computeWeeklyDaily(
   [
-    { dateISO: '2026-03-14', displayScore: 30 }, // 03-14 최신 -> 대표
-    { dateISO: '2026-03-15', displayScore: 80 }, // 03-15 최신 -> 대표
-    { dateISO: '2026-03-14', displayScore: 99 }, // 03-14 더 오래됨 -> 무시
+    { dateISO: '2026-03-14', displayScore: 30, walkMinutes: 3 },
+    { dateISO: '2026-03-15', displayScore: 80, walkMinutes: 2 },
+    { dateISO: '2026-03-14', displayScore: 90, walkMinutes: 1 },
   ],
   TODAY
 );
-assert('혼합: 03-14 대표 30(첫 매칭)', mixed[5].score === 30);
-assert('혼합: 03-15 대표 80', mixed[6].score === 80);
+assertClose('혼합: 03-14 날짜별 가중평균 45', mixed[5].score, 45);
+assertClose('혼합: 03-15 단일 80', mixed[6].score, 80);
 
-// (g) 같은 날 최신 항목의 점수가 비유한이면, 같은 날의 더 오래된 유한 점수가 대표가 된다.
-// 계약: 대표는 "그날의 마지막 보행"이되 유한 점수가 있어야 확정한다(빈 막대로 가려지지 않음).
+// (g) 같은 날 한 항목의 점수가 비유한이면 그 항목은 집계에서 제외되고, 같은 날의 유한 점수만
+// 대표를 만든다. 여기선 유한 점수가 77 하나뿐이라 대표는 77(가중평균/단순 평균 모두 77).
 const nonFiniteNewest = computeWeeklyDaily(
   [
-    { dateISO: '2026-03-15', displayScore: Number.NaN }, // 최신이지만 비유한 -> 건너뜀
-    { dateISO: '2026-03-15', displayScore: 77 }, // 같은 날 더 오래된 유한 점수 -> 대표
+    { dateISO: '2026-03-15', displayScore: Number.NaN }, // 비유한 -> 제외
+    { dateISO: '2026-03-15', displayScore: 77 }, // 유한 점수 -> 대표
   ],
   TODAY
 );
-assert('비유한 최신 -> 같은 날 오래된 유한 77 이 대표', nonFiniteNewest[6].score === 77);
+assertClose('비유한 항목 제외 -> 같은 날 유한 77 이 대표', nonFiniteNewest[6].score, 77);
 
-// (g-2) 점수 필드가 누락된 최신 항목도 마찬가지로 건너뛰고, 같은 날 유한 점수가 대표.
+// (g-2) 점수 필드가 누락된 항목도 마찬가지로 제외되고, 같은 날 유한 점수가 대표.
 const missingScoreNewest = computeWeeklyDaily(
   [
-    { dateISO: '2026-03-15' } as unknown as { dateISO: string; displayScore: number }, // 점수 누락 -> 건너뜀
-    { dateISO: '2026-03-15', displayScore: 63 }, // 같은 날 유한 점수 -> 대표
+    { dateISO: '2026-03-15' } as unknown as { dateISO: string; displayScore: number }, // 점수 누락 -> 제외
+    { dateISO: '2026-03-15', displayScore: 63 }, // 유한 점수 -> 대표
   ],
   TODAY
 );
-assert('점수 누락 최신 -> 같은 날 유한 63 이 대표', missingScoreNewest[6].score === 63);
+assertClose('점수 누락 항목 제외 -> 같은 날 유한 63 이 대표', missingScoreNewest[6].score, 63);
 
 // (g-3) 같은 날 모든 항목이 비유한이면 그 날은 null(빈 막대) 로 남는다.
 const allNonFinite = computeWeeklyDaily(

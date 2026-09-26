@@ -38,7 +38,7 @@
 
 ### 개발/검증 환경의 제약 (AI 작업 시 필수 인지)
 - **AI 샌드박스는 외부망 차단(INTEGRATIONS_ONLY)** + npm 레지스트리 접근 불가. 따라서 **RN 앱을 실제로 빌드/실행할 수 없고**, 새 npm 패키지도 설치 불가.
-- 대신 **순수 로직을 `scripts/verify-*.ts` 검증 스크립트**로 검증한다. 실행: `env -u NODE_OPTIONS node --experimental-strip-types scripts/verify-<name>.ts`. 현재 **23종** 존재, 전부 통과 유지가 필수 조건.
+- 대신 **순수 로직을 `scripts/verify-*.ts` 검증 스크립트**로 검증한다. 실행: `env -u NODE_OPTIONS node --experimental-strip-types scripts/verify-<name>.ts`. 현재 **24종** 존재, 전부 통과 유지가 필수 조건.
 - 그래서 규칙: `src/` 안에서는 node 표준 라이브러리(fs/path/url 등) import 금지(RN 런타임에 없음). JSON은 Metro `require`로만 로드. 순수 함수는 배열/값 주입식으로 설계해 node로 검증 가능하게 한다.
 - 실제 앱 동작 검증은 **개발자가 실기기에서 수동으로** 한다(AI는 못 함).
 
@@ -49,7 +49,7 @@
 ### 3.1 세그먼트 기반 누적
 보행 세션은 여러 **세그먼트(WalkSegment)**로 쪼개진다. 각 세그먼트는 하나의 (지역, 위험강도, 날씨, 시간대, 이어폰상태) 조합 구간이며 다음을 가진다:
 - `confirmedUseMinutes`: 이 구간에서 자세 기반으로 감지된 "화면 보며 걷기" 사용 시간(분) - **채점 감점의 소스**(7절). 필드가 없는 레거시 세그먼트는 `smartphoneUseMinutes`로 폴백한다.
-- `walkMinutes`: 이 구간 총 보행 시간(분)
+- `walkMinutes`: 이 구간의 **확정 보행 시간(분)**. **정지(idle)/차량(vehicle)/센서 공백은 분모에서도 제외**하며, 오직 확정 보행 구간만 누적한다. 즉 `usageRatio = 사용 시간 / 걸은 시간`(정지 시간은 분자·분모 양쪽에서 빠진다). `backgroundTask.processLocationSample`은 walking 이 확정된 샘플에서만 walkMinutes 를 채운다.
 - `riskIntensity`: 위치 위험강도(사고다발구역 severity 합, 구역 밖=0)
 - `weather`, `timeBand`, `isEarOccluded`
 
@@ -71,7 +71,8 @@ useMinutes = confirmedUseMinutesOf(segment)   // 자세 감지 use 시간(레거
 segment.contribution = combinedWeight × useMinutes
    (combinedWeight = wLocation × wWeather × wTime × wEar)
 totalDeduction = Σ contribution
-usageRatio = totalUseMinutes / totalWalkMinutes
+usageRatio = totalUseMinutes / totalWalkMinutes   // 걸은 시간 기준(정지/차량/센서공백은 분모에서도 제외)
+totalWalkMinutes = Σ segment.walkMinutes          // WSSResult.totalWalkMinutes(선택 필드)로도 노출
 scaledDeduction = DEDUCTION_SCALE(=4) × totalDeduction
 rawScore = clamp(100 - scaledDeduction, 0, 100)
 penalty(usageRatio) = usageRatio<0.3 ? 0 : 40 × (usageRatio-0.3) × (walk<3분?0.5:1)
@@ -153,7 +154,9 @@ belowCriticalThreshold = rawScore < 60
 13. **위험구역 빨간 원 반경 축소**: `ZONE_RADIUS_SCALE` 0.6→0.3. 단, 지도는 raw 경로라 스케일 미적용이던 버그를 찾아 `app/map.tsx`에서 `radius = radiusMeters × ZONE_RADIUS_SCALE` 적용(표시·겹침 반경 일치). **← 최신 커밋 25926c8.**
 14. **온보딩 루프 버그 수정**: `_layout`이 온보딩 완료를 앱 시작 시 1회만 읽어, 완료 후 홈 가면 다시 온보딩으로 튕기던 루프. 세션 내 완료 신호로 즉시 반영하도록 수정.
 15. **연령대 밴드 기능**: 온보딩에서 1회 선택(10/20/30/40/50+), 점수·피드백 업로드에 자동 첨부, 리포트에 전체+내 그룹 통계(각각 5명 미만이면 측정중), DB 스키마·RPC·개인정보처리방침·대시보드 반영.
-16. **주간 일별 막대그래프**: `WSSResult.dateISO`(선택 필드) 추가, 하루의 마지막 보행 점수를 그날 대표값으로 최근 7일 막대그래프. 순수 집계 `src/wss/weekly.ts#computeWeeklyDaily` + verify-weekly.
+16. **주간 일별 막대그래프**: `WSSResult.dateISO`(선택 필드) 추가, 최근 7일 막대그래프. 순수 집계 `src/wss/weekly.ts#computeWeeklyDaily` + verify-weekly.
+17. **하루 대표 점수 = 보행 시간 가중평균**: 하루에 여러 보행이 있으면 그날 대표값을 "마지막 보행 점수"가 아니라 **보행 시간 가중평균**(`Σ score×walkTime / Σ walkTime`)으로 낸다. 가중치는 각 보행의 `WSSResult.totalWalkMinutes`(= Σ segment.walkMinutes = 확정 보행 시간). **하위호환 규칙**: `walkMinutes`(가중치)가 없거나 <=0 인 항목만 있는 날은 유한 점수의 **균등가중(단순 평균) 폴백**으로 대표를 정한다(과거 이력이 빈 막대로 가려지지 않게). 오래 걸은 보행일수록 그날 대표에 더 크게 반영된다(짧게 잠깐 걸은 보행이 하루를 통째로 대표하던 왜곡 제거). `weekly.ts`/`WeeklyEntry.walkMinutes`(선택) + verify-weekly(가중평균 vs 마지막값 차이를 검증).
+18. **리포트 이력에 총 보행 시간 표기**: `WSSResult.totalWalkMinutes`(선택 필드)를 리포트 이력 각 행에 '보행 N분 M초'로 표시한다(`app/report.tsx#formatWalkMinutes`, 순수 분/초 포맷). 필드가 없던 과거 이력 행은 정직하게 '-' 로 표시한다. 주간 카드 캡션/빈 상태 문구도 "보행 시간 가중평균" 기준으로 갱신했다.
 
 > **개발자 측 남은 조작**: 최신 `supabase/schema.sql`을 Supabase SQL Editor에서 재실행(연령대 컬럼/RPC 반영, idempotent), 그리고 최신 코드로 새 preview 빌드해서 실기기 설치·검증.
 
@@ -306,12 +309,13 @@ modules/audio-environment/   커스텀 네이티브 오디오 모듈(Swift)
 supabase/schema.sql          DB 스키마(테이블·RLS·RPC)
 docs/feedback.html           피드백 웹 대시보드(로컬 HTML)
 docs/privacy-policy.md/.html 개인정보 처리방침
-scripts/verify-*.ts          순수 로직 검증(23종, 전부 통과 필수)
+scripts/verify-*.ts          순수 로직 검증(24종, 전부 통과 필수)
 assets/accident-zones.json   전국 사고다발지 12,780건(원본, 수정 금지)
 ```
 
-## 10. 검증 스크립트 목록(23종)
-verify-agegroup-stats, verify-api-key, verify-audio-ear-mapping, verify-dedup, verify-feedback, verify-geofence-selection, verify-grade, verify-grid, verify-interaction-tracker, verify-motion-classifier, verify-overlap-geometry, verify-overlap-render, verify-posture-math, verify-posture-usage, verify-segment-key, verify-session-reducer, verify-supabase-stats, verify-usage-classification, verify-usage-wss, verify-use-ratio, verify-weekly, verify-wss-example, verify-zone-cluster.
+## 10. 검증 스크립트 목록(24종)
+verify-agegroup-stats, verify-api-key, verify-audio-ear-mapping, verify-dedup, verify-feedback, verify-geofence-selection, verify-grade, verify-grid, verify-interaction-tracker, verify-location-walking, verify-motion-classifier, verify-overlap-geometry, verify-overlap-render, verify-posture-math, verify-posture-usage, verify-segment-key, verify-session-reducer, verify-supabase-stats, verify-usage-classification, verify-usage-wss, verify-use-ratio, verify-weekly, verify-wss-example, verify-zone-cluster.
+> 참고: verify-weekly(보행 시간 가중평균 계약)와 verify-usage-wss(WSSResult.totalWalkMinutes = Σ walkMinutes)는 이번 변경에서 갱신됐고, 새 스크립트는 추가하지 않았다.
 실행: `env -u NODE_OPTIONS node --experimental-strip-types scripts/verify-<name>.ts`
 
 ---

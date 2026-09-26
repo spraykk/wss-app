@@ -14,7 +14,8 @@ export interface WalkSegment {
   regionId: string;
   /** 이 구간에서 실제로 보행중 스마트폰을 사용한 시간(분) */
   smartphoneUseMinutes: number;
-  /** 이 구간의 총 보행 시간(분) */
+  /** 이 구간의 확정 보행 시간(분). 정지(idle)/차량/센서공백은 제외 - usageRatio 의 분모이자
+   * 하루 대표 가중치의 소스 */
   walkMinutes: number;
   /** 이 구간의 "위치 위험강도". 걸쳐 있는 사고다발구역이 없으면 0.
    * 구역이 하나면 그 구역의 실제 사고건수 기반 심각도(severity, 대략 0.5~2 사이),
@@ -61,6 +62,9 @@ export interface WSSResult {
   displayScore: number;
   /** 총 보행 시간 대비 스마트폰 사용 비율 (x) */
   usageRatio: number;
+  /** 확정 보행 시간(분)의 합. computeWSS 가 채운다. 하루 대표 점수의 가중평균 가중치이자
+   * 리포트 이력 표기의 소스. 선택 필드(옵셔널)라 이 필드가 없던 과거 이력 행과 하위호환된다. */
+  totalWalkMinutes?: number;
   /** 위험지역 진입 감지 여부 (실시간 알림 트리거용) */
   enteredHighRiskZoneWhileUsingPhone: boolean;
   /** WSS_critical 미만 여부 (보고서 임계점 60 기준, 알림/위험표시 등 트리거) */

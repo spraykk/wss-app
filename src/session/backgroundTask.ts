@@ -365,6 +365,11 @@ export async function processLocationSample(
   const touchUse = walking && hadRecentInteraction(nowMs);
   const useMinutes = touchUse || postureIsUse ? minutes : 0;
   const noUseMinutes = minutes - useMinutes;
+  // walkMinutes 는 이제 "확정 보행 시간"만 담는다: walking=true 인 구간의 경과분만 계상하고,
+  // 정지(idle)/차량/센서공백 구간은 0 으로 둔다(정직성: 관측/확정되지 않은 보행은 분모에 넣지
+  // 않는다). 이 값이 usageRatio 의 분모이자 하루 대표 점수 가중평균의 가중치가 된다. 세그먼트
+  // 자체는 idle 구간에서도 계속 생성해(zone/위험/밀집알림 로직 유지) walkMinutes 만 0 으로 기여한다.
+  const walkMinutesForSample = walking ? minutes : 0;
 
   const sample: WalkContextSample = {
     zoneId,
@@ -373,7 +378,8 @@ export async function processLocationSample(
     isEarOccluded,
     // 레거시 소비자/reduce 누적 호환을 위해 smartphoneUseMinutes 는 감지된 사용분을 미러링한다.
     smartphoneUseMinutes: useMinutes,
-    walkMinutes: elapsedMinutes,
+    // walkMinutes = 확정 보행 시간(분)만. idle/차량/센서공백은 usageRatio 분모에서 제외된다.
+    walkMinutes: walkMinutesForSample,
     timeBand,
     // 자세 기반 이분화: confirmedUse=감지된 사용, noUse=그 외. estimated/unknown 은 은퇴(0).
     confirmedUseMinutes: useMinutes,

@@ -56,6 +56,9 @@ export function computeWSS(segments: WalkSegment[]): WSSResult {
     belowCriticalThreshold: rawScore < WSS_CRITICAL,
     segmentBreakdown,
     usageBands,
+    // 확정 보행 시간(분)의 합. 이미 위에서 계산한 값 그대로 노출한다(채점 math 불변).
+    // 하루 대표 점수 가중평균의 가중치이자 리포트 이력의 총 보행 시간 표기 소스가 된다.
+    totalWalkMinutes,
   };
 }
 function clampScore(v: number): number { return Math.max(0, Math.min(100, v)); }
