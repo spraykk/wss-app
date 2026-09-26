@@ -68,6 +68,10 @@ export default function HomeScreen() {
         <Link href="/report" style={styles.link}>
           리포트 보기
         </Link>
+        {/* FEAT-002: 개발/진단용 실시간 패널. 점수가 왜 안 떨어지는지 단계별 값 확인. */}
+        <Link href="/diagnostics" style={styles.link}>
+          진단 패널(개발용)
+        </Link>
       </View>
     </View>
   );

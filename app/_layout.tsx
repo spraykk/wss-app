@@ -97,6 +97,8 @@ export default function RootLayout() {
         <Stack.Screen name="feedback" options={{ title: '의견 보내기' }} />
         {/* 방식1(Step 2 준비): 자세 측정/기록 도구 화면. 아직 WSS 점수에 반영 안 함(측정용). */}
         <Stack.Screen name="posture-lab" options={{ title: '자세 측정 도구' }} />
+        {/* FEAT-002: 실시간 진단 패널(개발/진단용). 파이프라인 값을 표시만 하고 상태를 바꾸지 않음. */}
+        <Stack.Screen name="diagnostics" options={{ title: '진단 패널' }} />
         <Stack.Screen name="onboarding/index" options={{ headerShown: false }} />
         <Stack.Screen name="onboarding/permissions" options={{ headerShown: false }} />
       </Stack>

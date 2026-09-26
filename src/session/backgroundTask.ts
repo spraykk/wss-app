@@ -41,6 +41,8 @@ import { gravityToPitchRoll } from '../sensors/postureMath';
 import {
   createInitialPostureContinuityState,
   stepPostureContinuity,
+  PITCH_USE_THRESHOLD_DEG,
+  USE_SUSTAIN_MS,
 } from '../sensors/postureUsageDetector';
 import type { PostureContinuityState } from '../sensors/postureUsageDetector';
 import { hadRecentInteraction } from './interactionTracker';
@@ -538,4 +540,106 @@ export function resetSessionTaskState(): void {
   postureContinuityState = createInitialPostureContinuityState();
   latestPostureContinuity = null;
   latestWalking = null;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// FEAT-002: 실시간 진단(읽기 전용) 스냅샷.
+//
+// 목적: 사용자가 실기기에서 "왜 점수가 안 떨어지는가"의 원인을 파이프라인 단계별로 눈으로
+// 확인할 수 있게, 이 모듈이 세션 동안 갱신하는 모듈 스코프 상태(latestPitchSample,
+// postureContinuityState/latestPostureContinuity, latestWalking, lastProcessedAt)를
+// 파생/신선도와 함께 한 번에 읽어 주는 getter 다.
+//
+// [캡슐화] 내부 mutable 상태(let 변수)는 절대 export 하지 않는다. 이 getter 만 얕은 스냅샷을
+// 계산해 반환하며, 반환값을 바꿔도 내부 상태에 영향이 없다(순수 읽기). 진단 화면은 이 값을
+// 표시만 하고 어떤 상태/점수/세그먼트/업로드도 변경하지 않는다(서버 전송 없음).
+//
+// [신선도 규칙] 사용(isUse) 귀속과 동일한 게이팅을 그대로 재현한다: walking 신선
+// (WALKING_SIGNAL_STALE_MS 이내) AND 자이로 샘플 신선(POSTURE_SAMPLE_STALE_MS 이내) AND
+// 지속 추적 결과 신선(POSTURE_SAMPLE_STALE_MS 이내) AND continuity.isUse. 이렇게 해야
+// 진단 패널의 "사용 중" 표시가 processLocationSample 의 실제 감점 귀속과 일치한다.
+export interface PostureDiagnostics {
+  /** 현재 pitch(도). 자이로 샘플이 아직 없으면 null. */
+  currentPitchDeg: number | null;
+  /** 마지막 자이로 샘플 경과(ms). 없으면 null(자이로 신선도). */
+  pitchSampleAgeMs: number | null;
+  /** 자이로 샘플이 신선한지(age <= POSTURE_SAMPLE_STALE_MS). */
+  pitchFresh: boolean;
+  /** 현재 pitch>=임계가 연속 유지된 시간(ms). 지속 중이 아니면 0. */
+  sustainedMs: number;
+  /** sustainedMs 를 초로 환산한 값. */
+  sustainedSeconds: number;
+  /** 이 순간 이 구간이 '사용'으로 귀속되는지(walking+신선+continuity.isUse 모두 충족). */
+  isUse: boolean;
+  /** pitch 사용 임계(도) = PITCH_USE_THRESHOLD_DEG(불변). */
+  thresholdDeg: number;
+  /** 지속 임계(ms) = USE_SUSTAIN_MS(불변). */
+  sustainMsThreshold: number;
+  /** 최신 보행 판정(신선할 때 그 값, 아니면 false). */
+  walking: boolean;
+  /** walking 판정 근거를 사람이 읽을 수 있는 문구로. */
+  walkingReason: string;
+  /** 마지막 위치 이벤트 경과(ms). 없으면 null(연속 위치 업데이트 도착 확인). */
+  lastLocationEventAgeMs: number | null;
+}
+
+// 모듈 스코프 상태를 읽어 진단 스냅샷을 만든다(순수하지 않은 RN 런타임 읽기: Date.now 기본값).
+// 내부 상태를 변경하지 않는다. nowMs 를 주입하면 결정적으로 테스트/재현할 수 있다.
+export function readPostureDiagnostics(nowMs: number = Date.now()): PostureDiagnostics {
+  // 자이로(pitch) 신선도.
+  const pitch = latestPitchSample;
+  const currentPitchDeg = pitch !== null ? pitch.pitchDeg : null;
+  const pitchSampleAgeMs =
+    pitch !== null && Number.isFinite(pitch.atMs) ? nowMs - pitch.atMs : null;
+  const pitchFresh = pitchSampleAgeMs !== null && pitchSampleAgeMs <= POSTURE_SAMPLE_STALE_MS;
+
+  // 지속 추적 결과(자이로 스트림 기반).
+  const continuity = latestPostureContinuity;
+  const sustainedMs = continuity !== null ? continuity.sustainedMs : 0;
+  const sustainedSeconds = sustainedMs / 1000;
+  const continuityFresh =
+    continuity !== null &&
+    Number.isFinite(continuity.atMs) &&
+    nowMs - continuity.atMs <= POSTURE_SAMPLE_STALE_MS;
+
+  // 보행 신호 신선도(processLocationSample 의 게이팅과 동일 규칙).
+  const walkingFresh =
+    latestWalking !== null &&
+    Number.isFinite(latestWalking.atMs) &&
+    nowMs - latestWalking.atMs <= WALKING_SIGNAL_STALE_MS;
+  const walking = walkingFresh ? latestWalking.walking : false;
+  let walkingReason: string;
+  if (latestWalking === null) {
+    walkingReason = '위치 신호 없음(보행 미확정)';
+  } else if (!walkingFresh) {
+    walkingReason = '위치 신호 오래됨(보수적으로 미보행 처리)';
+  } else if (latestWalking.walking) {
+    walkingReason = '위치 속도 기반 보행 감지';
+  } else {
+    walkingReason = '정지/차량 등(비보행)';
+  }
+
+  // 사용 귀속과 동일 게이팅: 신선한 보행 + 신선한 자이로/지속 + 현재 isUse.
+  const isUse =
+    walking && pitchFresh && continuityFresh && continuity !== null && continuity.isUse;
+
+  // 마지막 위치 이벤트 경과(연속 위치 업데이트가 실제로 도착하는지).
+  const lastLocationEventAgeMs =
+    lastProcessedAt !== null && Number.isFinite(lastProcessedAt)
+      ? nowMs - lastProcessedAt
+      : null;
+
+  return {
+    currentPitchDeg,
+    pitchSampleAgeMs,
+    pitchFresh,
+    sustainedMs,
+    sustainedSeconds,
+    isUse,
+    thresholdDeg: PITCH_USE_THRESHOLD_DEG,
+    sustainMsThreshold: USE_SUSTAIN_MS,
+    walking,
+    walkingReason,
+    lastLocationEventAgeMs,
+  };
 }
