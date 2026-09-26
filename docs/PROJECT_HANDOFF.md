@@ -38,7 +38,7 @@
 
 ### 개발/검증 환경의 제약 (AI 작업 시 필수 인지)
 - **AI 샌드박스는 외부망 차단(INTEGRATIONS_ONLY)** + npm 레지스트리 접근 불가. 따라서 **RN 앱을 실제로 빌드/실행할 수 없고**, 새 npm 패키지도 설치 불가.
-- 대신 **순수 로직을 `scripts/verify-*.ts` 검증 스크립트**로 검증한다. 실행: `env -u NODE_OPTIONS node --experimental-strip-types scripts/verify-<name>.ts`. 현재 **22종** 존재, 전부 통과 유지가 필수 조건.
+- 대신 **순수 로직을 `scripts/verify-*.ts` 검증 스크립트**로 검증한다. 실행: `env -u NODE_OPTIONS node --experimental-strip-types scripts/verify-<name>.ts`. 현재 **23종** 존재, 전부 통과 유지가 필수 조건.
 - 그래서 규칙: `src/` 안에서는 node 표준 라이브러리(fs/path/url 등) import 금지(RN 런타임에 없음). JSON은 Metro `require`로만 로드. 순수 함수는 배열/값 주입식으로 설계해 node로 검증 가능하게 한다.
 - 실제 앱 동작 검증은 **개발자가 실기기에서 수동으로** 한다(AI는 못 함).
 
@@ -99,12 +99,18 @@ belowCriticalThreshold = rawScore < 60
   - **정직한 한계(OS 보장 아님)**: 연속 위치 업데이트는 세션 동안 프로세스 생존 가능성을 크게 높이는 수단이지 절대 보장이 아니다. iOS는 배터리/메모리 압박 등 극단 상황에서 프로세스를 언제든 종료할 수 있고, 사용자가 앱을 **스와이프로 강제 종료하면 멈춘다(정상)**. 프로세스가 잠들거나 종료되어 자세 샘플이 끊긴 구간은 staleness 판정으로 **no-use로 귀속**되어 감점이 뻥튀기되지 않는다.
 - **저전력 전략**: 상시 고정밀 GPS 대신 연속 업데이트는 Balanced 정확도로만 유지하고, 위험구역 정밀 추적(BestForNavigation)은 지오펜스(근접 위험구역 최대 18개 + boundary 1개, iOS 20 region 하드캡 대응) 진입 시에만 상향(escalate), 이탈 시 하향(de-escalate)한다.
 - **차량 오인 방지** (`src/sensors/motionClassifier.ts`): GPS 속도로 walking/vehicle/idle 분류. 15km/h 이상이면 vehicle 모드+60초 쿨다운. 차량 구간은 세그먼트로 안 쌓음. Pedometer 걸음 증가를 보조 신호로 사용.
+- **자세 지속(3초) 판정을 200ms 자이로 고빈도 스트림에서 추적(핵심 결함 수정)**: 이전에는 "pitch>=10도가 3초 이상 지속"이라는 지속 판정을 **위치 이벤트가 오는 순간**(`processLocationSample`, `timeInterval:5000` → 약 5초마다 한 번)에만 갱신했다. 그런데 5초 스냅샷 중 **단 한 점이라도** pitch<10(팔 흔들림·순간적 자세 변화)이면 지속 run 이 리셋돼 3초 조건이 거의 채워지지 않았고, 그 결과 use 가 사실상 잡히지 않아 **점수가 전혀 떨어지지 않는** 증상(사용자 보고 '점수가 전혀 안 떨어짐')이 났다. 이제 지속은 **약 200ms 주기의 자이로(DeviceMotion/Accelerometer) 콜백 스트림**에서 순수 상태기계 `src/sensors/postureUsageDetector.ts#stepPostureContinuity`(`PostureContinuityState`)로 자체 추적한다. 즉 5초에 한 번이 아니라 초당 약 5회 pitch 를 보고 지속 시간을 누적하므로, 실제로 3초 이상 화면을 보며 걸으면 use 로 잡힌다.
+  - **바뀐 것은 '지속을 어느 신호로 추적하느냐'뿐이고, 임계 '값'은 불변**이다: `PITCH_USE_THRESHOLD_DEG=10`(도), `USE_SUSTAIN_MS=3000`(ms=3초) 그대로. 채점 파라미터(k=4 / 60 / 0.3 / 40)도 불변. 하위호환을 위해 `classifyPostureInterval`/`isSustainedUse`는 계속 export 한다.
+  - **정직한 한계 유지**: 200ms 자이로 스트림도 iOS 가 백그라운드에서 프로세스를 재우거나 종료하면 끊긴다. 그 공백 구간은 여전히 **no-use 로 귀속**되어 감점이 뻥튀기되지 않는다(관측 못 한 시간을 사용으로 감점하지 않음).
+- **밀집 위험구역 진입 알림(사용자 아이디어)**: 위험구역(빨간 원)에 들어갈 때마다 알림을 보내면 번거로우므로, **겹치는 사고다발구역이 밀집한(연결 요소 크기 >= 임계) 지점에 처음 진입할 때만 한 번** 로컬 알림 '사고 다발 구간이에요!'를 보낸다(`src/notifications/alerts.ts#presentDenseZoneEntryAlert`, `presentHighRiskAlert`/`presentCriticalScoreAlert`와 문구가 구분됨). 밀집 판정은 순수 모듈 `src/data/zoneCluster.ts`(`computeDenseClusterAt`/`shouldNotifyDenseCluster`, 설계 상수 `DENSE_ZONE_COUNT_THRESHOLD=3`)가 담당하고, `processLocationSample`이 클러스터 최초 진입 시 한 번만 발송한다. **같은 클러스터에 머무는 동안 재발송하지 않고**, 클러스터를 벗어났다가 재진입하거나 다른 클러스터에 진입하면 다시 보낸다(쿨다운 가드 추가). 세션 종료 시 `resetSessionTaskState`에서 상태가 리셋된다. **위치는 서버로 전송하지 않는다(온디바이스 순수 계산).**
 
 ### 온디바이스 검증 항목(샌드박스 실행 불가 - 실기기 필수)
 - 세션 시작 후 **화면을 끄고** 위험구역 **밖**에서 폰을 보며(pitch>=10도) 3초 이상 걸을 때, 자세 감지·감점이 계속 누적되는지(연속 위치 업데이트로 프로세스가 살아 자이로가 지속 수신되는지) 확인.
 - **다른 앱을 사용하며** 걸을 때도 자세 감지·감점이 이어지는지 확인(백그라운드 연속성).
 - iOS 위치 권한을 "앱 사용 중에만"으로 준 경우 백그라운드 연속성이 제한됨을, "항상"으로 준 경우 개선됨을 각각 확인.
 - 세션 종료 시 파란 위치 인디케이터가 사라지고(업데이트 중지), 배터리 소모가 상시 고정밀 대비 과하지 않은지 확인.
+- **진단 패널(`app/diagnostics.tsx`, 홈에서 진입)로 실기기에서 직접 확인**: (1) 걸으며 화면을 볼 때 pitch(도)가 10도 이상으로 뜨는지와 자이로 샘플 신선도, (2) pitch>=10 지속(초)이 3초까지 차서 `isUse`가 true 가 되는지, (3) 마지막 위치 이벤트 경과로 위치 이벤트가 실제로 약 5초 간격으로 도착하는지, (4) 세션 누적 use/보행 분과 사용비율(%)·표시점수가 걸을수록 갱신되는지. 이 패널은 값을 표시만 하고 점수 로직/서버 전송에 관여하지 않는다.
+- **밀집 구간 진입 알림 확인**: 겹치는 위험구역이 밀집한 지점에 처음 들어갈 때 '사고 다발 구간이에요!' 알림이 **한 번만** 오는지, 같은 클러스터에 머무는 동안 재발송되지 않는지, 벗어났다 재진입하면 다시 오는지 확인.
 
 ---
 
@@ -159,7 +165,8 @@ walkMinutes: elapsedMinutes,
 - **use(화면 보며 걷기)**: **걷는 중** + pitch(기기 앞뒤 기울기)가 `PITCH_USE_THRESHOLD_DEG`(=10도) 이상으로 `USE_SUSTAIN_MS`(=3000ms=3초) **이상 지속**될 때.
 - **no-use(그 외 전부)**: 걷지 않거나, pitch가 임계 미만이거나, 임계를 넘겨도 3초 미만으로 튄 경우.
 - **센서 공백 = no-use(정직성)**: 샘플이 도착하지 않는 공백 구간은 "모르면 사용으로 감점하지 않는다"는 보수적 원칙에 따라 **no-use**로 귀속한다(사용자 결정 '가'). 관측하지 못한 시간을 사용으로 감점하지 않는다.
-- 판정은 순수 상태기계 `src/sensors/postureUsageDetector.ts`(`classifyPostureInterval` / `isSustainedUse`)가 담당하고, pitch 값 자체는 `src/sensors/postureMath.ts#gravityToPitchRoll`로 계산해 주입한다. 세그먼트 집계는 `src/session/usageClassification.ts`가 use/no-use 분을 합산한다. 감지된 use 시간은 세그먼트의 `confirmedUseMinutes`에 기록되고 채점(`src/wss/engine.ts#confirmedUseMinutesOf`)이 이것으로 감점한다.
+- 판정은 순수 상태기계 `src/sensors/postureUsageDetector.ts`(`classifyPostureInterval` / `isSustainedUse` / `stepPostureContinuity`)가 담당하고, pitch 값 자체는 `src/sensors/postureMath.ts#gravityToPitchRoll`로 계산해 주입한다. 세그먼트 집계는 `src/session/usageClassification.ts`가 use/no-use 분을 합산한다. 감지된 use 시간은 세그먼트의 `confirmedUseMinutes`에 기록되고 채점(`src/wss/engine.ts#confirmedUseMinutesOf`)이 이것으로 감점한다.
+- **지속(3초)은 200ms 자이로 스트림에서 추적한다(결함 수정)**: 예전에는 3초 지속 판정을 위치 이벤트(약 5초마다 한 번)에서만 갱신했다. 그 5초 스냅샷 한 점이라도 pitch<10 이면 지속 run 이 리셋돼 3초 조건이 거의 안 채워졌고, 그래서 use 가 사실상 안 잡히고 **점수가 전혀 안 떨어지는** 증상이 났다(사용자 보고와 일치). 이제 지속은 약 200ms 주기의 자이로(DeviceMotion/Accelerometer) 콜백 스트림에서 `stepPostureContinuity`(`PostureContinuityState`)로 자체 추적한다. **바뀐 것은 '지속을 어느 신호로 추적하느냐'뿐이고 임계 값(pitch 10도, 3000ms)은 불변**이며, `classifyPostureInterval`/`isSustainedUse`는 하위호환을 위해 계속 export 한다. 자이로 스트림이 백그라운드에서 끊긴 공백은 여전히 no-use 로 귀속한다(4절과 동일한 정직성 한계).
 
 **설계값 (정직성 라벨 필수)**: `PITCH_USE_THRESHOLD_DEG=10`, `USE_SUSTAIN_MS=3000`은 **"사용자 1인 실측 기반 설계값 · 실제 사고 예측 아님"**이다. 이는 튜닝 가능한 설계값이며, 확정된(frozen) 채점 파라미터(k=4 / 임계점 60 / usageRatio 페널티 0.3·40, `weights.ts`)와는 성격이 다르다.
 
@@ -183,6 +190,7 @@ walkMinutes: elapsedMinutes,
 ### 7.1a iOS 백그라운드 센서 연속성 (코드로 보장되지 않음 · 온디바이스 검증 항목)
 - 실제 "다른 앱을 보며 걷기"까지 잡으려면 우리 앱이 백그라운드일 때도 모션(pitch)을 읽어야 한다. 앱 프로세스는 `UIBackgroundModes:location`으로 살아 있을 수 있으나, **iOS는 백그라운드 모션 연속성을 보장하지 않으며 시스템 판단에 따라 앱이 종료될 수 있다.** 즉 백그라운드에서 pitch 샘플이 계속 들어온다는 보장을 **코드가 제공하지 않는다.**
 - 이 한계는 **온디바이스 검증 항목**으로 남긴다(실기기에서 화면 끄고/다른 앱 켠 상태로 걸으며 샘플 연속성 확인). 방어책은 위의 **센서 공백 = no-use** 정책이다: 샘플이 끊기면 사용으로 감점하지 않으므로, 백그라운드 종료가 사용자를 부당하게 감점시키지 않는다.
+- **진단 패널(`app/diagnostics.tsx`)로 실기기 확인**: 걸으며 화면을 볼 때 pitch 가 10도 이상으로 뜨는지, 지속(초)이 3초까지 차서 `isUse`가 true 가 되는지, 위치 이벤트가 실제로 약 5초 간격으로 도착하는지(마지막 위치 이벤트 경과), 세션 누적 사용비율(%)이 오르는지. 이 패널은 `backgroundTask.readPostureDiagnostics`(모듈 스코프 상태의 읽기 전용 스냅샷)를 1초 폴링으로 표시만 하며 서버 전송/점수 로직에 관여하지 않는 개발/진단용 도구다.
 
 ### 7.2 iOS의 근본 제약 (반드시 고려)
 - iOS는 **백그라운드 앱에게 "화면이 켜져 있는지(스크린 온/오프)"를 알려주지 않는다.** 개인정보 보호 정책상 지속 조회 API가 막혀 있다.
@@ -251,12 +259,13 @@ src/wss/
   useRatio.ts       [신규] usageRatio(감지 사용/총 보행)→백분율 유도(홈·리포트 공용 문구)
 src/data/
   accidentZones.ts  사고데이터 로드·dedup(공간격자)·ZONE_RADIUS_SCALE(0.3)·겹침/포함 판정
+  zoneCluster.ts    [순수][신규] 현재 위치의 겹침 클러스터(연결 요소) 크기로 밀집 판정(computeDenseClusterAt/shouldNotifyDenseCluster, DENSE_ZONE_COUNT_THRESHOLD=3). 처음 진입 시 한 번만 알림 제어용. 위치 미전송
   supabase.ts       익명 업로드/통계/피드백(타임아웃·연령대·no-op 안전설계)
   weather.ts        KMA 단기예보 + latLonToGrid
   apiKey.ts         API 키 정규화(한 번만 인코딩)
   overlapGeometry.ts / overlapRender.ts  겹침 기하
 src/session/
-  backgroundTask.ts 백그라운드 세션 파이프라인(★ 자세 pitch 로 use/no-use 판정, classifyPostureInterval 호출)
+  backgroundTask.ts 백그라운드 세션 파이프라인(★ 자세 pitch 로 use/no-use 판정. 200ms 자이로 콜백에서 stepPostureContinuity 로 3초 지속 추적, 밀집 클러스터 최초 진입 알림 발송, readPostureDiagnostics 진단 getter 노출)
   usageClassification.ts 세그먼트 배열의 use/no-use 분 집계(UsageBand 타입은 하위호환용, estimated/unknown 은 항상 0=은퇴)
   interactionTracker.ts  인앱 터치/스크롤 시각 기록(보조 신호; 자세 감지가 사용 시간을 지배)
   sessionReducer.ts 순수 세그먼트 누적 리듀서
@@ -265,7 +274,7 @@ src/session/
 src/sensors/
   motionClassifier.ts   [순수] walking/vehicle/idle 분류(차량 제외)
   postureMath.ts        [순수] 중력벡터→pitch/roll(도), 요약통계(min/max/mean/median)
-  postureUsageDetector.ts [순수][신규] 자세 기반 use/no-use 판정 상태기계. PITCH_USE_THRESHOLD_DEG=10, USE_SUSTAIN_MS=3000(사용자 1인 실측 기반 설계값). 센서 공백=no-use
+  postureUsageDetector.ts [순수][신규] 자세 기반 use/no-use 판정 상태기계. PITCH_USE_THRESHOLD_DEG=10, USE_SUSTAIN_MS=3000(사용자 1인 실측 기반 설계값). 200ms 자이로 스트림용 stepPostureContinuity/PostureContinuityState 추가(3초 지속 추적), classifyPostureInterval/isSustainedUse 는 하위호환 유지. 센서 공백=no-use
   walkingDetector.ts    센서/타이머 배선
   audioState.ts / useAudioEnvironment.ts  이어폰 차음 감지
   geofenceController.ts / geofenceSelection.ts  저전력 지오펜스
@@ -281,12 +290,15 @@ app/
   report.tsx        리포트(점수·비교·주간 막대그래프·그룹통계)
   feedback.tsx      의견 보내기
   posture-lab.tsx   자세 측정/기록 도구(pitch/roll 실시간+구간요약, 실측 데이터 수집용)
+  diagnostics.tsx   [신규] 실시간 진단 패널(개발/진단용). readPostureDiagnostics 로 pitch/자이로 신선도/3초 지속/isUse/walking/마지막 위치 이벤트 경과/세션 누적을 1초 폴링 표시만 함. 서버 전송 없음, 점수 로직 불변
   onboarding/index.tsx, onboarding/permissions.tsx  온보딩(권한+연령대)
+src/notifications/
+  alerts.ts         로컬 알림(권한 게이트·쿨다운). presentHighRiskAlert / presentCriticalScoreAlert / presentDenseZoneEntryAlert('사고 다발 구간이에요!', 밀집 클러스터 최초 진입 1회)
 modules/audio-environment/   커스텀 네이티브 오디오 모듈(Swift)
 supabase/schema.sql          DB 스키마(테이블·RLS·RPC)
 docs/feedback.html           피드백 웹 대시보드(로컬 HTML)
 docs/privacy-policy.md/.html 개인정보 처리방침
-scripts/verify-*.ts          순수 로직 검증(22종, 전부 통과 필수)
+scripts/verify-*.ts          순수 로직 검증(23종, 전부 통과 필수)
 assets/accident-zones.json   전국 사고다발지 12,780건(원본, 수정 금지)
 ```
 
