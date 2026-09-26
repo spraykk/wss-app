@@ -42,7 +42,11 @@ const MIN_STATS_SAMPLE = 5;
 const GRADE_FEEDBACK: Record<WssGrade, { title: string; message: string; bg: string; text: string }> = {
   danger: {
     title: '위험',
-    message: '위험 구간입니다. 스마트폰 사용을 줄이고 주변을 살펴 주세요.',
+    // [문구 정직성] 이 등급은 '점수'가 기준선(60) 미만이라는 뜻이지, 사용자가 지금 위험
+    // 구역(사고다발구역) 안에 있다는 뜻이 아니다. 예전 문구('위험 구간입니다')는 현재 위치가
+    // 위험 구역인 것처럼 오해를 줘, 위험 구역 밖에서도 상단에 '위험 구간' 경고가 뜨는 것처럼
+    // 보였다(사용자 지적). 점수 기반 안내로 바로잡는다.
+    message: '이번 보행 안전 점수가 낮아요. 걷는 중 스마트폰 사용을 줄이면 점수가 올라가요.',
     bg: palette.dangerBg, // 파스텔 로즈
     text: palette.dangerText,
   },

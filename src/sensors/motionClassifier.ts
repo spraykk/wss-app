@@ -146,3 +146,72 @@ export function classifyMotion(
     },
   };
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 위치 샘플(백그라운드) 하나에 대한 "보행 결정"을 계산하는 얇은 순수 헬퍼.
+//
+// 배경/결함: 백그라운드 파이프라인(backgroundTask)은 예전에 "차량만 아니면 전부 보행"으로
+// 취급했다(shouldSkipAsVehicle 가 'vehicle' 일 때만 스킵하고, 'idle'/'walking' 은 모두
+// walking=true 로 흘려보냄). 그 결과 "가만히 서서(idle, 속도≈0) 폰을 들고 있으면" 보행으로
+// 오인되어 pitch>=10 3초 지속이 '사용'으로 잡히고 감점되었다(사용자 증상: 정지 중 감점,
+// 점수 급락). classifyMotion 은 이미 walking/idle/vehicle 3분류를 하므로, 여기서는 그 mode 를
+// 그대로 얻어 각 경로가 무엇을 해야 하는지(스킵할지, walking 을 true/false 로 넘길지)를
+// 한 곳에서 결정한다.
+//
+// 결정 규칙:
+//   - mode==='vehicle'  => skipAsVehicle=true (세그먼트 미누적, 기존 동작 유지). walking 은
+//                          의미 없음(스킵되므로) 이지만 정직하게 false.
+//   - mode==='idle'     => skipAsVehicle=false, walking=false. 즉 위치/위험구역/밀집알림 로직은
+//                          계속 돌되(processLocationSample 호출), 그 구간 경과분은 no-use 로
+//                          귀속되어 '사용 감점'이 0 이 된다(정지/신호대기는 감점하지 않는다).
+//   - mode==='walking'  => skipAsVehicle=false, walking=true. 확정된 보행만 사용 감점 후보.
+//
+// [속도 결측 처리 · 정직성] 백그라운드 위치 샘플의 speed 는 null/undefined/음수(미측정)일 수
+// 있다. 예전에는 이 경우 분류를 건너뛰고 통과시켰는데(그리고 상위에서 walking=true 로 하드코딩),
+// 그러면 "보행이 확정되지 않았는데" 사용으로 감점될 수 있었다. 프로젝트 정직성 규칙(관측/확정되지
+// 않은 시간은 사용으로 감점하지 않는다, 센서/신호 공백 => no-use)에 따라, 속도 결측 시에는
+// walking=true 로 단정하지 않는다.
+//   - 다만 정상 보행 중에도 GPS 속도가 간헐적으로 결측될 수 있어 매번 walking=false 로 두면
+//     보행이 과소 계상될 수 있다. 그래서 히스테리시스를 쓴다: "직전 분류(prev.mode)가 walking"
+//     이고 아직 차량 쿨다운이 아니라면, 속도 결측 1샘플은 직전 보행 상태를 유지(walking=true)한다.
+//     직전이 walking 이 아니었으면(idle/vehicle/초기) 속도 결측은 walking=false 로 보수 처리한다.
+//   - 이 트레이드오프는 "과소 계상 방향으로만 치우친다"는 원칙 안에 있다: 결측이 지속되면 자세
+//     지속 추적(자이로)의 walking 신선도(WALKING_SIGNAL_STALE_MS)가 만료되어 결국 no-use 로
+//     수렴한다. 단발 결측에서만 직전 보행을 유지해 정상 보행의 과소 계상을 완화할 뿐이다.
+//   속도 결측 시 분류기 상태(motionState)는 갱신하지 않는다(속도 없는 샘플로 쿨다운/걸음 기준을
+//   흔들지 않기 위함). 그래서 next=prev 를 그대로 반환한다.
+export interface LocationWalkingDecision {
+  mode: MotionMode;
+  next: MotionState;
+  // 차량 구간이라 세그먼트를 쌓지 않고 스킵해야 하는가.
+  skipAsVehicle: boolean;
+  // 이 구간을 "확정된 보행"으로 보아 자세 기반 사용 감점 후보로 삼을지.
+  walking: boolean;
+}
+
+export function decideLocationWalking(
+  prev: MotionState,
+  speedMps: number | null | undefined,
+  nowMs: number
+): LocationWalkingDecision {
+  // 속도 결측(null/undefined/음수/비유한): 분류 불가. 정직성상 보행을 단정하지 않는다.
+  // 직전이 walking 이었으면 단발 결측은 히스테리시스로 walking 유지, 아니면 보수적으로 false.
+  if (
+    speedMps === null ||
+    speedMps === undefined ||
+    !Number.isFinite(speedMps) ||
+    speedMps < 0
+  ) {
+    const walking = prev.mode === 'walking';
+    return { mode: prev.mode, next: prev, skipAsVehicle: false, walking };
+  }
+
+  const { mode, next } = classifyMotion(prev, { speedMps, nowMs });
+  return {
+    mode,
+    next,
+    skipAsVehicle: mode === 'vehicle',
+    // 확정된 보행일 때만 walking=true. idle(정지)/vehicle 은 사용 감점 후보에서 제외.
+    walking: mode === 'walking',
+  };
+}

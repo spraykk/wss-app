@@ -40,7 +40,7 @@ import { loadActiveSession, saveActiveSession } from './sessionStore';
 import type { ActiveSession } from './sessionStore';
 import { readAudioEnvironmentSnapshot } from '../sensors/useAudioEnvironment';
 import { isEarEffectivelyOccluded } from '../sensors/audioState';
-import { classifyMotion, createInitialMotionState } from '../sensors/motionClassifier';
+import { decideLocationWalking, createInitialMotionState } from '../sensors/motionClassifier';
 import type { MotionState } from '../sensors/motionClassifier';
 import { gravityToPitchRoll } from '../sensors/postureMath';
 import {
@@ -118,8 +118,9 @@ let latestPitchSample: { pitchDeg: number; atMs: number } | null = null;
 // processLocationSample 은 그 결과(현재 isUse)를 읽어 elapsedMinutes 를 use/no-use 로 귀속한다.
 let postureContinuityState: PostureContinuityState = createInitialPostureContinuityState();
 
-// 자이로 콜백이 참조할 최신 보행 판정 신호. 위치 이벤트(processLocationSample /
-// shouldSkipAsVehicle)에서 갱신한다. atMs 로 신선도를 판단해, 위치 신호가 아직 없거나 오래되면
+// 자이로 콜백이 참조할 최신 보행 판정 신호. 위치 이벤트(processLocationSample, 호출부가
+// decideSampleWalking 으로 계산해 넘긴 walking 값)에서 갱신한다. atMs 로 신선도를 판단해,
+// 위치 신호가 아직 없거나 오래되면
 // 보수적으로 walking=false 로 간주(=> 지속 시작 못 함 => no-use)해 감점 뻥튀기를 막는다.
 //
 // [의도된 트레이드오프 · 부트스트랩 사각지대 · 정직성 규칙] latestWalking 은 오직 위치 이벤트에서만
@@ -132,6 +133,11 @@ let postureContinuityState: PostureContinuityState = createInitialPostureContinu
 // 없이 사용을 셀 수 있게 되면 정직성 규칙 위반). 이 한계는 docs/PROJECT_HANDOFF.md 정직성 한계에도
 // 명시되어 있으며, 실기기 온디바이스 검증 항목이다.
 let latestWalking: { walking: boolean; atMs: number } | null = null;
+
+// 진단용: 마지막 위치 샘플의 이동 모드(walking/idle/vehicle)와 관측 시각. 아직 없으면 null.
+// decideSampleWalking 이 갱신하고, readPostureDiagnostics 가 walkingReason 문구에
+// idle(정지)/vehicle(차량)/walking 을 구분해 표시하는 데만 쓰인다(감점 로직에는 관여 안 함).
+let latestMotionMode: { mode: 'walking' | 'vehicle' | 'idle'; atMs: number } | null = null;
 
 // 최신 자이로 지속 추적 결과(진단/귀속용). isUse 는 "지금 pitch>=10 이 3초 이상 연속 유지 중"인가.
 let latestPostureContinuity: { isUse: boolean; sustainedMs: number; atMs: number } | null = null;
@@ -231,6 +237,7 @@ export function stopPostureSensors(): void {
   postureContinuityState = createInitialPostureContinuityState();
   latestPostureContinuity = null;
   latestWalking = null;
+  latestMotionMode = null;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -242,10 +249,11 @@ export async function processLocationSample(
   longitude: number,
   elapsedMinutes: number,
   now: Date = new Date(),
-  // 이 구간이 "진짜 보행" 구간인지. 차량 구간은 상위(shouldSkipAsVehicle)에서 이미 스킵되므로
-  // 여기 도달한 위치 샘플은 기본적으로 보행으로 본다. 자세 기반 '사용'은 walking=true 일 때만
-  // 인정한다(차량/정지 중 화면 보기는 사용으로 감점하지 않음). 호출부가 보행 신호를 넘긴다.
-  walking: boolean = true
+  // 이 구간이 "확정된 보행" 구간인지. 차량 구간은 상위(decideLocationWalking)에서 이미 스킵되고,
+  // 정지(idle)/속도결측 구간은 walking=false 로 넘어온다. 자세 기반 '사용' 감점은 walking=true
+  // 일 때만 인정한다(정지/차량 중 화면 보기는 사용으로 감점하지 않는다). 호출부가 보행 신호를
+  // 명시적으로 계산해서 넘긴다. 안전 기본값은 false(정직성: 확정되지 않은 보행은 감점하지 않음).
+  walking: boolean = false
 ): Promise<void> {
   const session = await loadActiveSession();
   // 추적 중이 아니면(사용자가 stop 했거나 미시작) 아무 것도 하지 않는다.
@@ -452,19 +460,26 @@ function shouldSendCriticalScoreAlert(nowMs: number): boolean {
 // ─────────────────────────────────────────────────────────────────────────────
 let lastProcessedAt: number | null = null;
 
-// 차량 탑승 오인 방지: 백그라운드 위치 샘플의 속도(coords.speed)를 순수 분류기로 분류해
-// 'vehicle' 로 판정되는 구간은 세션 세그먼트로 쌓지 않는다(포그라운드 detector 와 동일 로직).
-// Pedometer 걸음은 백그라운드 위치 태스크에 없으므로 속도만으로 분류한다(도보 속도+고속 쿨다운).
+// 차량 탑승 오인 방지 + 정지(idle) 무감점: 백그라운드 위치 샘플의 속도(coords.speed)를 순수
+// 분류기(decideLocationWalking)로 walking/idle/vehicle 로 분류한다. Pedometer 걸음은 백그라운드
+// 위치 태스크에 없으므로 속도만으로 분류한다(도보 속도 + 고속 쿨다운 + 속도결측 히스테리시스).
 let motionState: MotionState = createInitialMotionState();
 
-// 위치 샘플이 차량 구간인지 판정하고, 다음 처리를 스킵해야 하면 true 를 반환한다.
-// speed 가 없거나 음수(미측정)면 분류를 건너뛰고 처리를 허용한다(false).
-function shouldSkipAsVehicle(sample: Location.LocationObject, nowMs: number): boolean {
-  const speed = sample.coords.speed;
-  if (speed === null || speed === undefined || speed < 0) return false;
-  const { mode, next } = classifyMotion(motionState, { speedMps: speed, nowMs });
-  motionState = next;
-  return mode === 'vehicle';
+// 위치 샘플의 보행 결정(스킵 여부 + walking 신호)을 계산하고 분류기 상태를 갱신한다.
+// - vehicle => skipAsVehicle=true (세그먼트 미누적, 기존 동작 유지)
+// - idle(정지/신호대기) => skipAsVehicle=false, walking=false (감점 안 함, 경과분은 no-use)
+// - walking(확정 보행) => skipAsVehicle=false, walking=true (자세 기반 사용 감점 후보)
+// 속도 결측 시의 정직성 규칙/히스테리시스는 decideLocationWalking 주석 참고.
+function decideSampleWalking(
+  sample: Location.LocationObject,
+  nowMs: number
+): { skipAsVehicle: boolean; walking: boolean } {
+  const decision = decideLocationWalking(motionState, sample.coords.speed, nowMs);
+  motionState = decision.next;
+  // 진단 패널이 walking/idle/vehicle 구분을 사람이 읽을 수 있게 표시하도록 최신 모드를 기록한다.
+  // 속도 결측 시 decideLocationWalking 은 mode 를 직전 값으로 유지하므로 그대로 반영된다.
+  latestMotionMode = { mode: decision.mode, atMs: nowMs };
+  return { skipAsVehicle: decision.skipAsVehicle, walking: decision.walking };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -545,8 +560,11 @@ TaskManager.defineTask(SESSION_LOCATION_TASK_NAME, async ({ data, error }) => {
   const latest = locations[locations.length - 1];
   const nowMs = latest.timestamp ?? Date.now();
 
-  // 차량 구간이면 세그먼트를 쌓지 않고 스킵(경과분 기준점은 유지해 다음 보행 구간 왜곡 방지).
-  if (shouldSkipAsVehicle(latest, nowMs)) {
+  // 보행 결정: 차량 구간이면 세그먼트를 쌓지 않고 스킵(경과분 기준점은 유지해 다음 보행 구간
+  // 왜곡 방지). 정지(idle)/속도결측은 스킵하지 않고 walking=false 로 넘겨(감점 안 함), 위치/
+  // 위험구역/밀집알림 로직은 계속 동작하되 그 구간은 no-use 로 귀속된다.
+  const decision = decideSampleWalking(latest, nowMs);
+  if (decision.skipAsVehicle) {
     lastProcessedAt = nowMs;
     return;
   }
@@ -554,14 +572,14 @@ TaskManager.defineTask(SESSION_LOCATION_TASK_NAME, async ({ data, error }) => {
   const elapsedMinutes = lastProcessedAt ? Math.max(0, (nowMs - lastProcessedAt) / 60000) : 0;
   lastProcessedAt = nowMs;
 
-  // 여기 도달한 샘플은 shouldSkipAsVehicle 로 차량이 아님이 이미 걸러졌으므로 walking=true 로
-  // 넘긴다(차량 구간은 위에서 return 되어 자세 '사용'으로 감점되지 않는다 - FEAT-003 step3).
+  // 확정 보행일 때만 walking=true. 정지(idle)/속도결측은 walking=false 로 넘어가 자세 기반
+  // '사용' 감점 후보에서 제외된다(정지/신호대기 중 화면 보기는 감점하지 않는다).
   await processLocationSample(
     latest.coords.latitude,
     latest.coords.longitude,
     elapsedMinutes,
     new Date(nowMs),
-    true
+    decision.walking
   );
 });
 
@@ -575,20 +593,21 @@ export function makeGeofenceSessionCallbacks(): {
 } {
   const handle = (sample: Location.LocationObject): void => {
     const nowMs = sample.timestamp ?? Date.now();
-    // 차량 구간이면 세그먼트를 쌓지 않고 스킵(기준점만 갱신).
-    if (shouldSkipAsVehicle(sample, nowMs)) {
+    // 보행 결정: 차량이면 스킵(기준점만 갱신). 정지(idle)/속도결측은 스킵하지 않고 walking=false.
+    const decision = decideSampleWalking(sample, nowMs);
+    if (decision.skipAsVehicle) {
       lastProcessedAt = nowMs;
       return;
     }
     const elapsedMinutes = lastProcessedAt ? Math.max(0, (nowMs - lastProcessedAt) / 60000) : 0;
     lastProcessedAt = nowMs;
-    // 차량 구간은 위에서 이미 걸러졌으므로 walking=true(자세 '사용'은 보행 중에만 인정 - step3).
+    // 확정 보행일 때만 walking=true(자세 '사용'은 확정 보행 중에만 인정). idle/속도결측은 false.
     void processLocationSample(
       sample.coords.latitude,
       sample.coords.longitude,
       elapsedMinutes,
       new Date(nowMs),
-      true
+      decision.walking
     );
   };
   return {
@@ -615,6 +634,7 @@ export function resetSessionTaskState(): void {
   postureContinuityState = createInitialPostureContinuityState();
   latestPostureContinuity = null;
   latestWalking = null;
+  latestMotionMode = null;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -683,15 +703,26 @@ export function readPostureDiagnostics(nowMs: number = Date.now()): PostureDiagn
     Number.isFinite(latestWalking.atMs) &&
     nowMs - latestWalking.atMs <= WALKING_SIGNAL_STALE_MS;
   const walking = walkingFresh ? latestWalking.walking : false;
+  // 최신 이동 모드(walking/idle/vehicle)가 신선하면 그 값으로 비보행 사유를 더 구체적으로 표시.
+  const motionModeFresh =
+    latestMotionMode !== null &&
+    Number.isFinite(latestMotionMode.atMs) &&
+    nowMs - latestMotionMode.atMs <= WALKING_SIGNAL_STALE_MS;
+  const mode = motionModeFresh ? latestMotionMode.mode : null;
   let walkingReason: string;
   if (latestWalking === null) {
     walkingReason = '위치 신호 없음(보행 미확정)';
   } else if (!walkingFresh) {
     walkingReason = '위치 신호 오래됨(보수적으로 미보행 처리)';
   } else if (latestWalking.walking) {
-    walkingReason = '위치 속도 기반 보행 감지';
+    walkingReason = 'walking(보행): 위치 속도 기반 보행 감지';
+  } else if (mode === 'vehicle') {
+    walkingReason = 'vehicle(차량): 차량 탑승 감지 - 감점 안 함';
+  } else if (mode === 'idle') {
+    walkingReason = 'idle(정지): 정지/신호대기 - 감점 안 함';
   } else {
-    walkingReason = '정지/차량 등(비보행)';
+    // 모드 정보가 아직 없거나(오래됨) 속도 결측 등: 보수적으로 비보행.
+    walkingReason = '비보행(정지/차량/속도결측 등) - 감점 안 함';
   }
 
   // 사용 귀속과 동일 게이팅: 신선한 보행 + 신선한 자이로/지속 + 현재 isUse.
