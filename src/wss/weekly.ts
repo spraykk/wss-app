@@ -2,7 +2,7 @@
 //
 // 목적: 최근 7일(오늘 포함, 오늘 기준 이전 6일)의 "하루 대표 점수"를 막대그래프용으로 만든다.
 // 하루의 대표값 = 그날 유한 점수 보행들의 "보행 시간 가중평균"이다:
-//   rep = Σ(displayScore_i × w_i) / Σ(w_i),  w_i = 그 보행의 walkMinutes(확정 보행 시간).
+//   rep = Σ(displayScore_i × w_i) / Σ(w_i),  w_i = 그 보행의 totalWalkMinutes(확정 보행 시간).
 // 즉 오래 걸은 보행일수록 그날 대표 점수에 더 큰 영향을 준다(짧게 잠깐 걸은 보행이 하루 점수를
 // 통째로 대표하던 예전 '마지막 보행' 방식의 왜곡을 바로잡는다). 보행이 없는 날은 null(빈 막대).
 //
@@ -12,11 +12,11 @@
 //
 // 가중평균/하위호환 규칙(결정적):
 //   (a) 유한한 displayScore 가 있는 항목만 집계에 포함한다(비유한/누락은 예전과 동일하게 제외).
-//   (b) 가중치는 walkMinutes 가 유한하고 > 0 일 때만 그 값을 쓴다. walkMinutes 가 누락/비유한/
-//       <=0 이면 그 보행의 가중치는 0(가중합에 기여하지 않음).
-//   (c) 등가중 폴백: 어떤 날에 양의 유한 가중치를 가진 항목이 하나도 없으면(예: walkMinutes 필드가
-//       없던 레거시 이력 행들), 그 날은 유한 점수 항목들의 단순 평균으로 대표를 정한다(빈 막대로
-//       가려지지 않도록). 이렇게 walkMinutes 를 몰라도 정직하게 대표를 만든다.
+//   (b) 가중치는 totalWalkMinutes 가 유한하고 > 0 일 때만 그 값을 쓴다. totalWalkMinutes 가 누락/
+//       비유한/<=0 이면 그 보행의 가중치는 0(가중합에 기여하지 않음).
+//   (c) 등가중 폴백: 어떤 날에 양의 유한 가중치를 가진 항목이 하나도 없으면(예: totalWalkMinutes
+//       필드가 없던 레거시 이력 행들), 그 날은 유한 점수 항목들의 단순 평균으로 대표를 정한다(빈
+//       막대로 가려지지 않도록). 이렇게 totalWalkMinutes 를 몰라도 정직하게 대표를 만든다.
 //   가중평균은 순서 무관이므로 newest-first 여부는 대표 계산에 영향을 주지 않지만, 창(window)
 //   필터와 유한 점수 필터는 그대로 유지된다.
 //   dateISO 가 없는 항목은 특정 날짜에 배치할 수 없으므로 차트 집계에서 무시한다.
@@ -25,9 +25,10 @@
 export interface WeeklyEntry {
   dateISO?: string;
   displayScore: number;
-  /** 그날 대표 가중평균의 가중치 = 확정 보행 시간(분). WSSResult.totalWalkMinutes 를 넘긴다.
+  /** 그날 대표 가중평균의 가중치 = 확정 보행 시간(분). WSSResult 가 그대로 넘어올 때
+   * WSSResult.totalWalkMinutes 가 바로 이 필드로 매핑되도록 이름을 일치시켰다(호출부 매핑 불필요).
    * 없으면 하위호환 규칙 적용(가중치 0, 그날에 양의 가중치가 없으면 단순 평균으로 폴백). */
-  walkMinutes?: number;
+  totalWalkMinutes?: number;
 }
 
 // 하루 슬롯: 날짜와 그날의 대표 점수(없으면 null).
@@ -127,8 +128,8 @@ export function computeWeeklyDaily(
     // 등가중 폴백용: 유한 점수 항목은 무조건 단순 평균 누산에 포함한다.
     a.simpleSum += score;
     a.simpleCount += 1;
-    // 가중치는 walkMinutes 가 유한하고 > 0 일 때만 사용(그 외는 가중치 0 -> 가중합에 미기여).
-    const w = entry.walkMinutes;
+    // 가중치는 totalWalkMinutes 가 유한하고 > 0 일 때만 사용(그 외는 가중치 0 -> 가중합에 미기여).
+    const w = entry.totalWalkMinutes;
     if (typeof w === 'number' && Number.isFinite(w) && w > 0) {
       a.weightedSum += score * w;
       a.weightSum += w;

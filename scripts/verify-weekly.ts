@@ -56,8 +56,8 @@ function assertClose(label: string, actual: number | null, expected: number): vo
 //   last-of-day 였다면 90(또는 순서에 따라 30), 단순 평균이면 60 이 되어 모두 36 과 다르다.
 const weighted = computeWeeklyDaily(
   [
-    { dateISO: '2026-03-15', displayScore: 90, walkMinutes: 1 },
-    { dateISO: '2026-03-15', displayScore: 30, walkMinutes: 9 },
+    { dateISO: '2026-03-15', displayScore: 90, totalWalkMinutes: 1 },
+    { dateISO: '2026-03-15', displayScore: 30, totalWalkMinutes: 9 },
   ],
   TODAY
 );
@@ -65,49 +65,72 @@ assertClose('보행시간 가중평균 = 36 (last=90/simple=60 과 다름)', wei
 assert('가중평균이 last-of-day(90) 이 아님', weighted[6].score !== 90);
 assert('가중평균이 단순 평균(60) 이 아님', weighted[6].score !== 60);
 
+// (핵심/실배선 가드) 저장 이력 행은 WSSResult 형태이며 가중치를 totalWalkMinutes 에 담는다.
+// app/report.tsx 는 이 WSSResult[] 를 그대로 computeWeeklyDaily 에 넘긴다. 이 케이스는 그 실제
+// 배선을 그대로 재현한다: 리더가 존재하지 않는 walkMinutes 필드를 읽도록 되돌아가면(회귀),
+// 가중치가 전부 0 이 되어 단순 평균 60 으로 폴백하므로 아래 36 단언이 FAIL 한다(뮤테이션 민감).
+// WSSResult 의 다른 필수 필드(rawScore 등)까지 채워 실제 저장 행과 동일한 초과 필드를 갖게 한다.
+interface WSSResultLikeRow {
+  dateISO: string;
+  displayScore: number;
+  rawScore: number;
+  totalWalkMinutes?: number;
+}
+const wssShapedRows: WSSResultLikeRow[] = [
+  { dateISO: '2026-03-15', displayScore: 90, rawScore: 90, totalWalkMinutes: 1 },
+  { dateISO: '2026-03-15', displayScore: 30, rawScore: 30, totalWalkMinutes: 9 },
+];
+const wssShaped = computeWeeklyDaily(wssShapedRows, TODAY);
+assertClose(
+  'WSSResult 형태(totalWalkMinutes 가중) 실배선 -> 가중평균 36 (walkMinutes 리더면 60 으로 폴백)',
+  wssShaped[6].score,
+  36
+);
+assert('실배선 가중평균이 단순 평균(60) 이 아님', wssShaped[6].score !== 60);
+
 // (i) 단일 보행 -> 그 보행 점수 자체가 대표.
 const single = computeWeeklyDaily(
-  [{ dateISO: '2026-03-15', displayScore: 73, walkMinutes: 5 }],
+  [{ dateISO: '2026-03-15', displayScore: 73, totalWalkMinutes: 5 }],
   TODAY
 );
 assertClose('단일 보행 -> 그 점수 73', single[6].score, 73);
 
-// (ii) 두 보행 등가중(같은 walkMinutes) -> 단순 평균.
+// (ii) 두 보행 등가중(같은 totalWalkMinutes) -> 단순 평균.
 const equalWeights = computeWeeklyDaily(
   [
-    { dateISO: '2026-03-15', displayScore: 80, walkMinutes: 4 },
-    { dateISO: '2026-03-15', displayScore: 40, walkMinutes: 4 },
+    { dateISO: '2026-03-15', displayScore: 80, totalWalkMinutes: 4 },
+    { dateISO: '2026-03-15', displayScore: 40, totalWalkMinutes: 4 },
   ],
   TODAY
 );
 assertClose('등가중 두 보행 -> 단순 평균 60', equalWeights[6].score, 60);
 
-// (iii) 레거시: walkMinutes 가 모든 항목에 없음 -> 등가중 폴백(단순 평균).
+// (iii) 레거시: totalWalkMinutes 가 모든 항목에 없음 -> 등가중 폴백(단순 평균).
 const legacy = computeWeeklyDaily(
   [
-    { dateISO: '2026-03-15', displayScore: 90 }, // walkMinutes 없음
-    { dateISO: '2026-03-15', displayScore: 30 }, // walkMinutes 없음
+    { dateISO: '2026-03-15', displayScore: 90 }, // totalWalkMinutes 없음
+    { dateISO: '2026-03-15', displayScore: 30 }, // totalWalkMinutes 없음
   ],
   TODAY
 );
-assertClose('레거시(walkMinutes 없음) -> 단순 평균 60 폴백', legacy[6].score, 60);
+assertClose('레거시(totalWalkMinutes 없음) -> 단순 평균 60 폴백', legacy[6].score, 60);
 
-// (iii-2) walkMinutes 가 있어도 <=0/비유한이면 가중치 0 -> 그 날에 양의 가중치가 없으면 단순 평균 폴백.
+// (iii-2) totalWalkMinutes 가 있어도 <=0/비유한이면 가중치 0 -> 그 날에 양의 가중치가 없으면 단순 평균 폴백.
 const nonPositiveWeights = computeWeeklyDaily(
   [
-    { dateISO: '2026-03-15', displayScore: 100, walkMinutes: 0 },
-    { dateISO: '2026-03-15', displayScore: 50, walkMinutes: Number.NaN },
+    { dateISO: '2026-03-15', displayScore: 100, totalWalkMinutes: 0 },
+    { dateISO: '2026-03-15', displayScore: 50, totalWalkMinutes: Number.NaN },
   ],
   TODAY
 );
-assertClose('walkMinutes<=0/비유한만 -> 단순 평균 75 폴백', nonPositiveWeights[6].score, 75);
+assertClose('totalWalkMinutes<=0/비유한만 -> 단순 평균 75 폴백', nonPositiveWeights[6].score, 75);
 
-// (iv) 혼합: 한 항목만 양의 walkMinutes, 다른 항목은 누락 -> 양의 가중치 항목만 가중평균을 구동.
-// 90(walk 2) + 20(walkMinutes 없음) -> weightedSum=180, weightSum=2 -> 180/2 = 90.
+// (iv) 혼합: 한 항목만 양의 totalWalkMinutes, 다른 항목은 누락 -> 양의 가중치 항목만 가중평균을 구동.
+// 90(walk 2) + 20(totalWalkMinutes 없음) -> weightedSum=180, weightSum=2 -> 180/2 = 90.
 const mixedWeights = computeWeeklyDaily(
   [
-    { dateISO: '2026-03-15', displayScore: 90, walkMinutes: 2 },
-    { dateISO: '2026-03-15', displayScore: 20 }, // walkMinutes 없음 -> 가중치 0
+    { dateISO: '2026-03-15', displayScore: 90, totalWalkMinutes: 2 },
+    { dateISO: '2026-03-15', displayScore: 20 }, // totalWalkMinutes 없음 -> 가중치 0
   ],
   TODAY
 );
@@ -116,8 +139,8 @@ assertClose('혼합: 양의 가중치 항목만 가중평균 구동 -> 90', mixe
 // (a) 같은 날 여러 보행 -> 보행시간 가중평균이 대표(순서 무관).
 const multi = computeWeeklyDaily(
   [
-    { dateISO: '2026-03-15', displayScore: 88, walkMinutes: 3 },
-    { dateISO: '2026-03-15', displayScore: 40, walkMinutes: 1 },
+    { dateISO: '2026-03-15', displayScore: 88, totalWalkMinutes: 3 },
+    { dateISO: '2026-03-15', displayScore: 40, totalWalkMinutes: 1 },
   ],
   TODAY
 );
@@ -165,9 +188,9 @@ assert('dateISO 없는 항목은 어느 날에도 안 들어감', missing.filter
 // 03-14: 30(walk 3) + 90(walk 1) -> (90+90)/4 = 45. 03-15: 단일 80(walk 2) -> 80.
 const mixed = computeWeeklyDaily(
   [
-    { dateISO: '2026-03-14', displayScore: 30, walkMinutes: 3 },
-    { dateISO: '2026-03-15', displayScore: 80, walkMinutes: 2 },
-    { dateISO: '2026-03-14', displayScore: 90, walkMinutes: 1 },
+    { dateISO: '2026-03-14', displayScore: 30, totalWalkMinutes: 3 },
+    { dateISO: '2026-03-15', displayScore: 80, totalWalkMinutes: 2 },
+    { dateISO: '2026-03-14', displayScore: 90, totalWalkMinutes: 1 },
   ],
   TODAY
 );
