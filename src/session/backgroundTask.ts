@@ -23,10 +23,15 @@ import * as TaskManager from 'expo-task-manager';
 import { Accelerometer, DeviceMotion } from 'expo-sensors';
 import type { AccidentZone } from '../types';
 import { loadAccidentZones, findEnclosingZones } from '../data/accidentZones';
+import { computeDenseClusterAt, shouldNotifyDenseCluster } from '../data/zoneCluster';
 import { computeRiskIntensity } from '../wss/weights';
 import { getCurrentTimeBand } from '../wss/context';
 import { computeWSS } from '../wss/engine';
-import { presentHighRiskAlert, presentCriticalScoreAlert } from '../notifications/alerts';
+import {
+  presentHighRiskAlert,
+  presentCriticalScoreAlert,
+  presentDenseZoneEntryAlert,
+} from '../notifications/alerts';
 import { getCachedWeather } from './weatherCache';
 import { latLonToGrid } from '../data/weather';
 import { reduceSession } from './sessionReducer';
@@ -253,6 +258,28 @@ export async function processLocationSample(
     zoneName = rep.name;
   }
 
+  // 1-b) 밀집 구간 진입 알림(FEAT-003) - 위 고위험/60점미만 알림과는 '별개의 트리거/문구'다.
+  // presentHighRiskAlert(고위험 zone + 휴대폰 사용)/presentCriticalScoreAlert(점수 60점 미만)의
+  // 조건/문구는 아래에서 그대로 유지하며, 여기서는 점수/사용과 무관하게 "위험구역이 꽤 밀집된
+  // 구간에 처음 진입"했을 때만 한 번 간단히 안내한다(사용자 아이디어: '사고 다발 구간이에요!').
+  // 순수 판정(computeDenseClusterAt/shouldNotifyDenseCluster)으로 클러스터를 식별하고, 같은
+  // 클러스터에 머무는 동안 재발송하지 않는다. 클러스터를 벗어나면 lastDenseClusterId 를 리셋해
+  // 재진입/다른 클러스터 진입 시 다시 알린다. 과다발송 방지 쿨다운 가드를 추가로 둔다.
+  const denseResult = computeDenseClusterAt(zones, latitude, longitude);
+  if (
+    shouldNotifyDenseCluster(lastDenseClusterId, denseResult.clusterId, denseResult.isDense) &&
+    shouldSendDenseZoneAlert(now.getTime())
+  ) {
+    await presentDenseZoneEntryAlert();
+    lastDenseClusterId = denseResult.clusterId;
+  } else if (!denseResult.isDense || denseResult.clusterId === null) {
+    // 밀집 구간 밖으로 나감 => 다음에 (같은/다른) 클러스터 진입 시 다시 알리도록 리셋.
+    lastDenseClusterId = null;
+  } else {
+    // 같은 밀집 클러스터에 계속 머무는 중(재발송 없음): 현재 클러스터를 기록만 갱신한다.
+    lastDenseClusterId = denseResult.clusterId;
+  }
+
   // 2) 날씨(TTL 캐시). 실제 GPS 위경도를 KMA 격자로 변환해 조회하므로 전국 어디서나 정확하다.
   //    (변환 불가 시에만 안전 폴백 격자 사용.) 3) 오디오 환경(best-effort, 딥 백그라운드에서 stale 가능).
   const grid = gridForLocation(latitude, longitude);
@@ -353,6 +380,29 @@ export async function processLocationSample(
   if (wss.belowCriticalThreshold && shouldSendCriticalScoreAlert(now.getTime())) {
     await presentCriticalScoreAlert();
   }
+}
+
+// ── FEAT-003: 밀집 구간 진입 알림 상태(모듈 스코프) ──────────────────────────
+// 마지막으로 밀집 진입 알림을 보낸 클러스터의 결정적 id. '처음 한 번만' 규칙의 근거다:
+// 현재 클러스터가 이 값과 다를 때만(그리고 밀집일 때만) 발송한다. 같은 클러스터에 머무는
+// 동안은 재발송하지 않고, 클러스터 밖으로 나가면 null 로 리셋해 재진입/다른 클러스터에서
+// 다시 알린다(processLocationSample 의 밀집 분기 참고). 세션 종료 시 resetSessionTaskState 에서
+// 리셋되어, 다음 세션에서 첫 진입을 다시 알릴 수 있다.
+let lastDenseClusterId: string | null = null;
+
+// 밀집 진입 알림의 세션 내 쿨다운(밀리초). '처음 한 번만'은 클러스터 id 비교로 이미 보장되지만,
+// 클러스터를 짧게 들락날락하는 등의 경계에서 알림이 도배되지 않도록 시간 가드를 추가로 둔다
+// (shouldSendCriticalScoreAlert 와 동일 패턴). 설계값(튜닝 가능).
+const DENSE_ZONE_ALERT_COOLDOWN_MS = 5 * 60 * 1000;
+let lastDenseZoneAlertAt: number | null = null;
+
+// 마지막 발송 이후 쿨다운이 지났으면 true 를 반환하고 발송 시각을 갱신한다.
+function shouldSendDenseZoneAlert(nowMs: number): boolean {
+  if (lastDenseZoneAlertAt !== null && nowMs - lastDenseZoneAlertAt < DENSE_ZONE_ALERT_COOLDOWN_MS) {
+    return false;
+  }
+  lastDenseZoneAlertAt = nowMs;
+  return true;
 }
 
 // 60점 미만 추가 위험 알림의 세션 내 쿨다운(밀리초). 이벤트 트리거가 잦은 구역에서
@@ -536,6 +586,9 @@ export function resetSessionTaskState(): void {
   lastProcessedAt = null;
   motionState = createInitialMotionState();
   lastCriticalScoreAlertAt = null;
+  // FEAT-003: 밀집 진입 알림 상태도 리셋(다음 세션에서 첫 진입을 다시 알릴 수 있게).
+  lastDenseClusterId = null;
+  lastDenseZoneAlertAt = null;
   latestPitchSample = null;
   postureContinuityState = createInitialPostureContinuityState();
   latestPostureContinuity = null;

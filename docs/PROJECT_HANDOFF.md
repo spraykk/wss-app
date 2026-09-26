@@ -290,8 +290,8 @@ scripts/verify-*.ts          순수 로직 검증(22종, 전부 통과 필수)
 assets/accident-zones.json   전국 사고다발지 12,780건(원본, 수정 금지)
 ```
 
-## 10. 검증 스크립트 목록(22종)
-verify-agegroup-stats, verify-api-key, verify-audio-ear-mapping, verify-dedup, verify-feedback, verify-geofence-selection, verify-grade, verify-grid, verify-interaction-tracker, verify-motion-classifier, verify-overlap-geometry, verify-overlap-render, verify-posture-math, verify-posture-usage, verify-segment-key, verify-session-reducer, verify-supabase-stats, verify-usage-classification, verify-usage-wss, verify-use-ratio, verify-weekly, verify-wss-example.
+## 10. 검증 스크립트 목록(23종)
+verify-agegroup-stats, verify-api-key, verify-audio-ear-mapping, verify-dedup, verify-feedback, verify-geofence-selection, verify-grade, verify-grid, verify-interaction-tracker, verify-motion-classifier, verify-overlap-geometry, verify-overlap-render, verify-posture-math, verify-posture-usage, verify-segment-key, verify-session-reducer, verify-supabase-stats, verify-usage-classification, verify-usage-wss, verify-use-ratio, verify-weekly, verify-wss-example, verify-zone-cluster.
 실행: `env -u NODE_OPTIONS node --experimental-strip-types scripts/verify-<name>.ts`
 
 ---

@@ -59,6 +59,26 @@ export async function presentCriticalScoreAlert(): Promise<void> {
   });
 }
 
+// 사고다발구역이 "밀집된 구간"에 처음 진입했을 때 한 번만 보내는 로컬 알림(FEAT-003).
+// 이 알림은 presentHighRiskAlert(고위험 zone 진입 + 휴대폰 사용)와 presentCriticalScoreAlert
+// (WSS 점수 60점 미만)와는 별개의 트리거/문구다. 여기는 "점수/사용 여부와 무관하게, 위험
+// 구역이 밀집된 지점에 들어왔다"는 사실만을 간단히 안내한다(사용자 아이디어: '사고 다발
+// 구간이에요!'). 발송 여부(처음 한 번만/클러스터 단위)는 backgroundTask 에서 순수 판정
+// (shouldNotifyDenseCluster)으로 제어하고, 여기서는 문구 표시만 담당한다.
+// requestNotificationPermission 게이트/no-op 안전 설계는 다른 알림 함수와 동일하다.
+export async function presentDenseZoneEntryAlert(): Promise<void> {
+  const granted = await requestNotificationPermission();
+  if (!granted) return;
+  await Notifications.scheduleNotificationAsync({
+    content: {
+      title: '사고 다발 구간 진입',
+      body: '사고 다발 구간이에요! 주변을 살피며 걸어 주세요.',
+      sound: true,
+    },
+    trigger: null, // 즉시 표시
+  });
+}
+
 // Android 전용: 지속 알림용 저중요도 채널을 준비한다(1회 등록으로 충분, 반복 호출 무해).
 // iOS 에는 채널 개념이 없으므로 no-op. 권한/미지원 시 조용히 무시한다.
 export async function ensureTrackingChannel(): Promise<void> {
