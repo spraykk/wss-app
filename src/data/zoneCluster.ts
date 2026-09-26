@@ -143,3 +143,54 @@ export function shouldNotifyDenseCluster(
   if (currentClusterId === null) return false;
   return currentClusterId !== lastClusterId;
 }
+
+/** decideDenseClusterAlert 의 결정: 지금 알림을 발송할지(fire)와, 발송 후 backgroundTask 가
+ *  저장해야 할 다음 lastDenseClusterId 값(nextLastClusterId). */
+export interface DenseAlertDecision {
+  /** 지금 밀집 진입 알림을 발송해야 하는가. */
+  fire: boolean;
+  /** 이 판정 후 backgroundTask 의 lastDenseClusterId 에 저장할 값. */
+  nextLastClusterId: string | null;
+}
+
+// '처음 한 번만' 발송 + 쿨다운을 하나의 순수 결정으로 합친다(검증 가능). backgroundTask 의
+// 밀집 분기 결함을 순수 함수로 끌어내 단위 테스트할 수 있게 한 것이다.
+//
+// 결함(수정 대상): 기존 인라인 로직은 shouldNotifyDenseCluster 가 true(진짜 새 클러스터)라도
+// 쿨다운(cooldownReady=false)이 막으면 조건 전체가 false 가 되어, "같은 클러스터 유지" 분기로
+// 떨어져 lastDenseClusterId 를 새 클러스터로 갱신해 버렸다. 그 결과 그 새 클러스터는 쿨다운이
+// 끝난 뒤에도 currentClusterId === lastClusterId 가 되어 영영 알림이 안 나갔다.
+//
+// 올바른 규칙:
+//  - 새 클러스터(shouldNotifyDenseCluster=true) & 쿨다운 준비됨(cooldownReady=true)
+//      => 발송(fire=true), lastDenseClusterId 를 현재 클러스터로 전진.
+//  - 새 클러스터지만 쿨다운이 막음(cooldownReady=false)
+//      => 발송 안 함(fire=false), lastDenseClusterId 를 '그대로 유지'(전진 금지)해서 쿨다운이
+//         끝난 뒤의 샘플이 여전히 currentClusterId !== lastClusterId 를 만족해 발송하게 한다.
+//  - 밀집 아님/구역 밖(isDense=false 또는 currentClusterId=null)
+//      => 발송 안 함, lastDenseClusterId 를 null 로 리셋(재진입/다른 클러스터에서 재발송).
+//  - 같은 이미-알린 클러스터에 머무는 중
+//      => 발송 안 함, lastDenseClusterId 를 그대로 유지(재발송 없음).
+export function decideDenseClusterAlert(
+  lastClusterId: string | null,
+  currentClusterId: string | null,
+  isDense: boolean,
+  cooldownReady: boolean
+): DenseAlertDecision {
+  // 밀집 구간 밖(또는 클러스터 없음): 다음 (재)진입에서 다시 알리도록 리셋.
+  if (!isDense || currentClusterId === null) {
+    return { fire: false, nextLastClusterId: null };
+  }
+  // 새 클러스터인가('처음 한 번만' 판정).
+  if (shouldNotifyDenseCluster(lastClusterId, currentClusterId, isDense)) {
+    if (cooldownReady) {
+      // 발송 + 현재 클러스터로 전진.
+      return { fire: true, nextLastClusterId: currentClusterId };
+    }
+    // 쿨다운이 막음: 발송하지 않고 lastClusterId 를 '그대로' 둔다(전진 금지). 이래야 쿨다운이
+    // 끝난 뒤의 샘플이 여전히 새 클러스터로 인식되어 알림이 나간다(결함 수정 핵심).
+    return { fire: false, nextLastClusterId: lastClusterId };
+  }
+  // 같은 이미-알린 클러스터에 머무는 중: 재발송 없이 현재 클러스터 기록 유지.
+  return { fire: false, nextLastClusterId: currentClusterId };
+}

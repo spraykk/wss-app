@@ -23,7 +23,7 @@ import * as TaskManager from 'expo-task-manager';
 import { Accelerometer, DeviceMotion } from 'expo-sensors';
 import type { AccidentZone } from '../types';
 import { loadAccidentZones, findEnclosingZones } from '../data/accidentZones';
-import { computeDenseClusterAt, shouldNotifyDenseCluster } from '../data/zoneCluster';
+import { computeDenseClusterAt, decideDenseClusterAlert } from '../data/zoneCluster';
 import { computeRiskIntensity } from '../wss/weights';
 import { getCurrentTimeBand } from '../wss/context';
 import { computeWSS } from '../wss/engine';
@@ -121,6 +121,16 @@ let postureContinuityState: PostureContinuityState = createInitialPostureContinu
 // 자이로 콜백이 참조할 최신 보행 판정 신호. 위치 이벤트(processLocationSample /
 // shouldSkipAsVehicle)에서 갱신한다. atMs 로 신선도를 판단해, 위치 신호가 아직 없거나 오래되면
 // 보수적으로 walking=false 로 간주(=> 지속 시작 못 함 => no-use)해 감점 뻥튀기를 막는다.
+//
+// [의도된 트레이드오프 · 부트스트랩 사각지대 · 정직성 규칙] latestWalking 은 오직 위치 이벤트에서만
+// 세팅되므로, 세션 시작 직후 첫 위치 이벤트가 도착하기 전(자이로만 흐르는 몇 초)과 위치 이벤트가
+// WALKING_SIGNAL_STALE_MS(8초)를 넘겨 멈춘 구간에서는 walking=false 로 보여, 그 동안은 지속(sustain)
+// 런을 시작할 수 없다. 이는 '의도된 fail-closed 설계'다: 신선한 보행 신호 없이는 절대 '사용'으로
+// 감점하지 않는다(프로젝트 정직성 규칙 = 관측/확정되지 않은 시간은 감점하지 않는다, 센서/신호 공백
+// => no-use). 결코 사용을 부풀리지 않고 오직 과소 계상 방향으로만 치우친다. 그래서 여기서 보행
+// 신호를 startPostureSensors 시점에 미리 seed 하는 등으로 느슨하게 만들지 않는다(신선한 보행 신호
+// 없이 사용을 셀 수 있게 되면 정직성 규칙 위반). 이 한계는 docs/PROJECT_HANDOFF.md 정직성 한계에도
+// 명시되어 있으며, 실기기 온디바이스 검증 항목이다.
 let latestWalking: { walking: boolean; atMs: number } | null = null;
 
 // 최신 자이로 지속 추적 결과(진단/귀속용). isUse 는 "지금 pitch>=10 이 3초 이상 연속 유지 중"인가.
@@ -262,22 +272,26 @@ export async function processLocationSample(
   // presentHighRiskAlert(고위험 zone + 휴대폰 사용)/presentCriticalScoreAlert(점수 60점 미만)의
   // 조건/문구는 아래에서 그대로 유지하며, 여기서는 점수/사용과 무관하게 "위험구역이 꽤 밀집된
   // 구간에 처음 진입"했을 때만 한 번 간단히 안내한다(사용자 아이디어: '사고 다발 구간이에요!').
-  // 순수 판정(computeDenseClusterAt/shouldNotifyDenseCluster)으로 클러스터를 식별하고, 같은
+  // 순수 판정(computeDenseClusterAt/decideDenseClusterAlert)으로 클러스터를 식별하고, 같은
   // 클러스터에 머무는 동안 재발송하지 않는다. 클러스터를 벗어나면 lastDenseClusterId 를 리셋해
   // 재진입/다른 클러스터 진입 시 다시 알린다. 과다발송 방지 쿨다운 가드를 추가로 둔다.
+  // 발송 판정은 순수 함수(decideDenseClusterAlert)로 위임한다. 이 함수는 '처음 한 번만' 규칙과
+  // 쿨다운 준비 여부를 합쳐 (a) 지금 발송할지(fire)와 (b) 저장할 다음 lastDenseClusterId 를
+  // 결정한다. 핵심: 쿨다운이 막을 때는 lastDenseClusterId 를 '전진시키지 않아야' 쿨다운이 끝난
+  // 뒤의 샘플이 여전히 새 클러스터로 인식되어 알림이 나간다(예전 인라인 로직의 결함 수정).
+  // 여기서는 isDenseAlertCooldownReady(발송 시각을 바꾸지 않는 순수 조회)로 준비 여부만 읽고,
+  // 실제로 발송할 때(fire=true)만 markDenseZoneAlertSent 로 발송 시각을 커밋한다.
   const denseResult = computeDenseClusterAt(zones, latitude, longitude);
-  if (
-    shouldNotifyDenseCluster(lastDenseClusterId, denseResult.clusterId, denseResult.isDense) &&
-    shouldSendDenseZoneAlert(now.getTime())
-  ) {
+  const denseDecision = decideDenseClusterAlert(
+    lastDenseClusterId,
+    denseResult.clusterId,
+    denseResult.isDense,
+    isDenseAlertCooldownReady(now.getTime())
+  );
+  lastDenseClusterId = denseDecision.nextLastClusterId;
+  if (denseDecision.fire) {
+    markDenseZoneAlertSent(now.getTime());
     await presentDenseZoneEntryAlert();
-    lastDenseClusterId = denseResult.clusterId;
-  } else if (!denseResult.isDense || denseResult.clusterId === null) {
-    // 밀집 구간 밖으로 나감 => 다음에 (같은/다른) 클러스터 진입 시 다시 알리도록 리셋.
-    lastDenseClusterId = null;
-  } else {
-    // 같은 밀집 클러스터에 계속 머무는 중(재발송 없음): 현재 클러스터를 기록만 갱신한다.
-    lastDenseClusterId = denseResult.clusterId;
   }
 
   // 2) 날씨(TTL 캐시). 실제 GPS 위경도를 KMA 격자로 변환해 조회하므로 전국 어디서나 정확하다.
@@ -396,13 +410,21 @@ let lastDenseClusterId: string | null = null;
 const DENSE_ZONE_ALERT_COOLDOWN_MS = 5 * 60 * 1000;
 let lastDenseZoneAlertAt: number | null = null;
 
-// 마지막 발송 이후 쿨다운이 지났으면 true 를 반환하고 발송 시각을 갱신한다.
-function shouldSendDenseZoneAlert(nowMs: number): boolean {
+// 쿨다운이 지나 지금 발송해도 되는지 '조회만' 한다(발송 시각을 바꾸지 않는 순수 조회). 실제
+// 발송 여부는 decideDenseClusterAlert 가 클러스터 규칙과 이 값을 합쳐 결정하며, 발송이 확정된
+// 경우에만 markDenseZoneAlertSent 로 발송 시각을 커밋한다. 조회와 커밋을 분리한 이유: 새
+// 클러스터라도 쿨다운이 막으면 발송하지 않고 lastDenseClusterId 도 전진시키지 않아야 하는데,
+// 예전처럼 조회하면서 발송 시각을 갱신해 버리면 쿨다운 창이 계속 밀려 재발송이 지연된다.
+function isDenseAlertCooldownReady(nowMs: number): boolean {
   if (lastDenseZoneAlertAt !== null && nowMs - lastDenseZoneAlertAt < DENSE_ZONE_ALERT_COOLDOWN_MS) {
     return false;
   }
-  lastDenseZoneAlertAt = nowMs;
   return true;
+}
+
+// 밀집 진입 알림을 실제로 발송했음을 기록한다(발송 시각 커밋). 이후 쿨다운 창이 여기서부터 흐른다.
+function markDenseZoneAlertSent(nowMs: number): void {
+  lastDenseZoneAlertAt = nowMs;
 }
 
 // 60점 미만 추가 위험 알림의 세션 내 쿨다운(밀리초). 이벤트 트리거가 잦은 구역에서

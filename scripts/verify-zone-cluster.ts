@@ -20,8 +20,12 @@
 import { register } from 'node:module';
 register('./ts-transpile-hook.mjs', import.meta.url);
 
-const { computeDenseClusterAt, shouldNotifyDenseCluster, DENSE_ZONE_COUNT_THRESHOLD } =
-  await import('../src/data/zoneCluster.ts');
+const {
+  computeDenseClusterAt,
+  shouldNotifyDenseCluster,
+  decideDenseClusterAlert,
+  DENSE_ZONE_COUNT_THRESHOLD,
+} = await import('../src/data/zoneCluster.ts');
 
 type AccidentZone = {
   id: string;
@@ -204,6 +208,64 @@ assert('DENSE_ZONE_COUNT_THRESHOLD === 3 (설계값)', K === 3, String(K));
   assert('current=null 이면(밖) 미발송', shouldNotifyDenseCluster(CID_A, null, true) === false);
   // 밖으로 나갔다(last 를 호출부가 null 로 리셋) 재진입 => 다시 발송.
   assert('밖으로 나갔다 재진입(last=null) => 재발송', shouldNotifyDenseCluster(null, CID_A, true) === true);
+}
+
+// ── decideDenseClusterAlert: '처음 한 번만' + 쿨다운 합성 결정(결함 회귀 방지) ─
+// 예전 인라인 로직의 결함: 새 클러스터인데 쿨다운이 막으면 lastDenseClusterId 를 새 클러스터로
+// 전진시켜 버려, 쿨다운이 끝난 뒤에도 그 클러스터 알림이 영영 안 나갔다. 아래 단언들은 그
+// 결함을 정확히 겨냥한다(뮤테이션 민감: nextLastClusterId 전진/유지 규칙을 바꾸면 깨진다).
+{
+  const CID_A = 'cluster:A-0|A-1|A-2';
+  const CID_B = 'cluster:B-0|B-1|B-2';
+
+  // 새 클러스터 + 쿨다운 준비됨 => 발송 + id 전진.
+  {
+    const d = decideDenseClusterAlert(null, CID_A, true, true);
+    assert('새 클러스터 + 쿨다운 OK => fire=true', d.fire === true);
+    assert('새 클러스터 + 쿨다운 OK => nextId 전진(=현재)', d.nextLastClusterId === CID_A, `${d.nextLastClusterId}`);
+  }
+
+  // 핵심 결함 회귀: 새 클러스터지만 쿨다운이 막음 => 발송 안 함 + id '유지'(전진 금지).
+  {
+    const d = decideDenseClusterAlert(null, CID_A, true, false);
+    assert('새 클러스터 + 쿨다운 막힘 => fire=false', d.fire === false);
+    assert('새 클러스터 + 쿨다운 막힘 => nextId 유지(전진 금지, =이전 last)', d.nextLastClusterId === null, `${d.nextLastClusterId}`);
+  }
+
+  // 위 상태에서 쿨다운이 끝난 뒤 같은 새 클러스터 샘플 => 이제 발송(결함이었다면 여기서 안 나감).
+  {
+    // 직전 판정이 nextLastClusterId=null 을 저장했다고 보고, 쿨다운 준비됨으로 재판정.
+    const d = decideDenseClusterAlert(null, CID_A, true, true);
+    assert('쿨다운 해제 후 재판정 => 지연됐던 알림 발송(post-cooldown re-fire)', d.fire === true && d.nextLastClusterId === CID_A);
+  }
+
+  // 이미 발송한(이전 클러스터 존재) 상태에서 다른 클러스터 + 쿨다운 막힘 => 발송 안 함 + last 유지.
+  {
+    const d = decideDenseClusterAlert(CID_A, CID_B, true, false);
+    assert('다른 클러스터 + 쿨다운 막힘 => fire=false, last 유지(전진 금지)', d.fire === false && d.nextLastClusterId === CID_A, `${d.nextLastClusterId}`);
+    // 그 뒤 쿨다운 해제 => B 발송(A 로 되돌아가지 않고 B 로 전진).
+    const d2 = decideDenseClusterAlert(CID_A, CID_B, true, true);
+    assert('그 후 쿨다운 해제 => B 발송 + B 로 전진', d2.fire === true && d2.nextLastClusterId === CID_B);
+  }
+
+  // 같은 이미-알린 클러스터에 머무는 중 => 발송 안 함, id 유지(쿨다운 준비 여부와 무관).
+  {
+    const dReady = decideDenseClusterAlert(CID_A, CID_A, true, true);
+    assert('같은 클러스터 유지(쿨다운 OK) => fire=false, id 유지', dReady.fire === false && dReady.nextLastClusterId === CID_A);
+    const dBlocked = decideDenseClusterAlert(CID_A, CID_A, true, false);
+    assert('같은 클러스터 유지(쿨다운 막힘) => fire=false, id 유지', dBlocked.fire === false && dBlocked.nextLastClusterId === CID_A);
+  }
+
+  // 밀집 아님/구역 밖 => 발송 안 함 + id 를 null 로 리셋(쿨다운 준비 여부와 무관).
+  {
+    const dNotDense = decideDenseClusterAlert(CID_A, CID_A, false, true);
+    assert('밀집 아님 => fire=false, id=null 리셋', dNotDense.fire === false && dNotDense.nextLastClusterId === null);
+    const dOutside = decideDenseClusterAlert(CID_A, null, false, true);
+    assert('구역 밖(current=null) => fire=false, id=null 리셋', dOutside.fire === false && dOutside.nextLastClusterId === null);
+    // 밖으로 나갔다 재진입(last=null) + 쿨다운 OK => 재발송.
+    const dReenter = decideDenseClusterAlert(null, CID_A, true, true);
+    assert('밖으로 나갔다 재진입 + 쿨다운 OK => 재발송', dReenter.fire === true && dReenter.nextLastClusterId === CID_A);
+  }
 }
 
 if (failures > 0) {
