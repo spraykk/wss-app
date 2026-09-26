@@ -36,6 +36,7 @@ const EARTH_RADIUS_METERS = 6371000;
 //   이중 인코딩하면 HTTP 400 이 난다 -> normalizeApiKey 로 "정확히 한 번" 인코딩.
 // - 지역명 서버측 필터 파라미터는 없다. 전체(전국 약 12,780건)를 페이지네이션으로
 //   순회하며 클라이언트에서 ctprvnSignguNm 문자열 매칭으로 거른다.
+//   regionKeyword 를 생략/빈문자열로 주면 필터를 건너뛰어 "전국 전체"를 그대로 저장한다.
 // - 성공 응답 구조에는 최상위 response 래퍼가 없다: { header, body }.
 //   header.resultCode === '00' 이면 정상. body.items.item[] 에 지점들이 들어온다.
 // - 위경도는 latitude/longitude(문자열, 위경도 맞음)를 쓴다.
@@ -68,15 +69,20 @@ interface TaasResponse {
   };
 }
 
-// TAAS 표준 사고다발지 API 에서 전국 데이터를 페이지네이션으로 순회하며,
-// ctprvnSignguNm 이 regionKeyword 를 포함하는 지점만 AccidentZone[] 로 반환한다.
+// TAAS 표준 사고다발지 API 에서 전국 데이터를 페이지네이션으로 순회한다.
+// - regionKeyword 가 비어 있으면(빈 문자열/undefined) 필터를 건너뛰고 "전국 전체"를 저장한다.
+// - regionKeyword 가 주어지면 ctprvnSignguNm 이 그 키워드를 포함하는 지점만 반환한다(하위호환).
 //
 // @param apiKey        data.go.kr serviceKey (인코딩/원시 무관 - normalizeApiKey 로 정규화)
-// @param regionKeyword 클라이언트측 지역 필터 키워드(예: '관악구'). ctprvnSignguNm 부분일치.
+// @param regionKeyword (선택) 클라이언트측 지역 필터 키워드(예: '관악구'). ctprvnSignguNm 부분일치.
+//                      생략/빈문자열이면 전 지역 포함(필터 스킵) -> 전국 전체(약 12,780건).
 export async function fetchAccidentZonesFromTAAS(
   apiKey: string,
-  regionKeyword: string
+  regionKeyword?: string
 ): Promise<AccidentZone[]> {
+  // 필터 키워드를 정규화: undefined/공백만 있으면 "전국 전체"(필터 스킵)로 취급한다.
+  const filterKeyword = (regionKeyword ?? '').trim();
+  const filterAll = filterKeyword.length === 0;
   const serviceKey = normalizeApiKey(apiKey);
   const numOfRows = 1000;
   const zones: AccidentZone[] = [];
@@ -109,7 +115,8 @@ export async function fetchAccidentZonesFromTAAS(
 
     for (const row of items) {
       const region = row.ctprvnSignguNm ?? '';
-      if (!region.includes(regionKeyword)) continue;
+      // 전국 모드(filterAll)면 필터를 건너뛰고 전부 포함한다. 지역 모드면 부분일치만 포함.
+      if (!filterAll && !region.includes(filterKeyword)) continue;
       zones.push({
         id: row.acdntAreaManageNo ?? `taas-${pageNo}-${zones.length}`,
         name: row.acdntAreaLcNm ?? '이름미상 사고다발지',
@@ -130,8 +137,9 @@ export async function fetchAccidentZonesFromTAAS(
 }
 
 // 폴리곤 근사 반경 축소 계수. 표준데이터 폴리곤을 원으로 단순화하면 실제보다
-// 넓게 잡히는 경향이 있어, 렌더/겹침 판정 시 40% 축소(0.6배)해 과대 표시를 막는다.
-export const ZONE_RADIUS_SCALE = 0.6;
+// 넓게 잡히는 경향이 있어, 렌더/겹침 판정 시 70% 축소(0.3배)해 과대 표시를 막는다.
+// (기존 0.6 대비 정확히 절반으로 줄여 지도 위 빨간 원 반경을 1/2로 축소한다.)
+export const ZONE_RADIUS_SCALE = 0.3;
 
 // assets/accident-zones.json 이 없거나 비었을 때의 안전 폴백(샘플) zone 목록.
 // 앱이 데이터 없이도 최소한의 지도/알림 동작을 유지하도록 한다.
@@ -185,6 +193,21 @@ export function haversineMeters(
 }
 
 // 임계값(thresholdMeters) 이내로 서로 인접한 zone 들을 하나로 병합하는 순수 함수.
+//
+// 성능(공간격자 최적화): 과거에는 모든 쌍(i, j)을 비교하는 O(n^2) 알고리즘이었다.
+// 관악(137행)에서는 무시할 만하지만 전국 전체(약 12,780행)에서는 약 8천만 회 비교가
+// 되어, processLocationSample 이 위치 샘플마다 loadAccidentZones() 를 재실행하면
+// JS 스레드가 수 초씩 블로킹되어(보행 종료 버튼/지도 렉) 사용성이 무너졌다.
+// 이를 해결하기 위해 위경도 기반 공간격자(spatial grid/bucket)로 이웃 후보만 비교한다:
+//   - 격자 셀 크기를 threshold 로 잡고, 각 zone 을 (cellX, cellY) 버킷에 넣는다.
+//   - 자신의 셀 + 인접 8셀(총 9셀) 안의 후보와만 haversine 비교 -> 근사 O(n).
+//   - 경도 셀 폭은 위도에 따라 달라지므로(cos(lat)), 위/경도 각각 미터->도 근사로
+//     (위도 1도≈111320m) 보수적으로 셀을 잡아 threshold 이내 쌍이 인접 9셀 밖으로
+//     새어나가지 않게 한다(누락이 생기면 dedup 결과가 달라진다).
+// 결과 불변성(중요): 최적화는 "비교할 후보 쌍"만 줄일 뿐, union-find 클러스터링/병합
+// 규칙/순서는 완전탐색과 동일하다. 후보에서 조건(j>i, 거리<=threshold)을 만족하는 쌍을
+// 원본과 같은 (i 오름차순, j 오름차순) 순서로 union 하므로, 연결 요소·대표·집계·배열
+// 순서가 기존 O(n^2) 완전탐색 결과와 바이트 단위로 동일하다(verify-dedup 가 이를 검증).
 // - 클러스터링: 진정한 전이적(transitive) 클러스터링 = 겹침 그래프의 연결 요소
 //   (connected components). zone i, j 사이의 haversine 거리 <= threshold 이면
 //   두 zone 을 잇는 간선(edge)으로 보고, union-find 로 연결 요소를 계산한다.
@@ -198,7 +221,8 @@ export function haversineMeters(
 //
 // 보정(calibration) 안전성: 임계값 내 이웃이 없는 고립 zone 은 단일 구성원
 // 연결 요소가 되어 그대로 통과한다(합계 = 자기 자신의 count). 따라서 count 5
-// 기준 참조 지점은 불변 -> computeZoneSeverity(5)=1.0 -> computeLocationWeight(1.0)=2.5 유지.
+// 기준 참조 지점은 불변 -> computeZoneSeverity(5)=1.0 -> computeLocationWeight(1.0)=highRisk 유지
+// (실증 재조정 후 highRisk=1.5).
 // (count 5 를 특수 처리하지 않는다. 일반 알고리즘이 자연히 고립 지점을 보존한다.)
 export function mergeNearbyZones(
   zones: AccidentZone[],
@@ -223,9 +247,58 @@ export function mergeNearbyZones(
     if (ra !== rb) parent[ra] = rb;
   }
 
-  // 임계값 내에 있는 모든 쌍(i, j)에 대해 간선을 만들어 union.
+  // 공간격자(spatial grid) 인덱싱: 각 zone 을 threshold 크기의 셀에 넣는다.
+  // 위도->미터: 1도 ≈ METERS_PER_DEG_LAT. 경도->미터는 위도에 따라 cos(lat) 로 줄어든다.
+  // 셀 크기를 위/경도 "도(degree)" 단위로 환산하되, 후보 누락이 없도록 보수적으로 잡는다.
+  //   cellLatDeg = threshold / METERS_PER_DEG_LAT
+  //   cellLonDeg = threshold / (METERS_PER_DEG_LAT * cos(latRef))
+  // cos(latRef) 가 작을수록(고위도) 경도 도폭이 커져 셀 하나가 더 넓은 경도범위를 덮으므로,
+  // 데이터 전체 위도 중 |lat| 최댓값(적도에서 가장 먼 위도)으로 cos 를 잡아 경도 셀을 가장
+  // 좁게(=가장 촘촘하게) 만든다. 이렇게 하면 어떤 지점에서도 threshold 이내 이웃이 반드시
+  // 자신+인접 8셀(9셀) 안에 들어온다(경도 방향 누락 방지). 위도 방향은 위도 무관하게 안전.
+  const METERS_PER_DEG_LAT = 111320;
+  const cellLatDeg = thresholdMeters / METERS_PER_DEG_LAT;
+  let maxAbsLat = 0;
   for (let i = 0; i < zones.length; i += 1) {
-    for (let j = i + 1; j < zones.length; j += 1) {
+    const a = Math.abs(zones[i].latitude);
+    if (a > maxAbsLat) maxAbsLat = a;
+  }
+  // cos(위도) 하한(0 방지). 위도 89.x도 이상 극단값에서도 0 나눗셈을 피한다.
+  const cosRef = Math.max(Math.cos((maxAbsLat * Math.PI) / 180), 1e-6);
+  const cellLonDeg = thresholdMeters / (METERS_PER_DEG_LAT * cosRef);
+
+  const cellX = (lon: number): number => Math.floor(lon / cellLonDeg);
+  const cellY = (lat: number): number => Math.floor(lat / cellLatDeg);
+  const cellKey = (cx: number, cy: number): string => `${cx}:${cy}`;
+
+  // 버킷: 셀 -> 그 셀에 속한 zone 인덱스 목록(삽입 순서 = i 오름차순).
+  const buckets = new Map<string, number[]>();
+  for (let i = 0; i < zones.length; i += 1) {
+    const key = cellKey(cellX(zones[i].longitude), cellY(zones[i].latitude));
+    const bucket = buckets.get(key);
+    if (bucket) bucket.push(i);
+    else buckets.set(key, [i]);
+  }
+
+  // 임계값 내에 있는 쌍(i, j)에 대해서만 간선을 만들어 union.
+  // 완전탐색과 "동일한" 결과를 보장하려고, i 오름차순으로 진행하며 각 i 의 후보 j 를
+  // 자신+인접 8셀에서 모아 (j>i, 거리<=threshold) 만 남기고 j 오름차순으로 정렬해 union 한다.
+  // -> 원본 이중 루프(for i; for j>i)와 동일한 union 호출 순서/집합이 된다.
+  for (let i = 0; i < zones.length; i += 1) {
+    const cx = cellX(zones[i].longitude);
+    const cy = cellY(zones[i].latitude);
+    const candidates: number[] = [];
+    for (let dx = -1; dx <= 1; dx += 1) {
+      for (let dy = -1; dy <= 1; dy += 1) {
+        const bucket = buckets.get(cellKey(cx + dx, cy + dy));
+        if (!bucket) continue;
+        for (const j of bucket) {
+          if (j > i) candidates.push(j);
+        }
+      }
+    }
+    candidates.sort((a, b) => a - b);
+    for (const j of candidates) {
       if (
         haversineMeters(
           zones[i].latitude,
@@ -310,8 +383,21 @@ export function loadRawAccidentZones(): AccidentZone[] {
 }
 
 // 앱에서 사용하는 진입점: 원시 데이터 로드 후 중복 병합/후처리된 zone 목록을 반환한다.
+//
+// 메모이즈(중요/성능): processLocationSample(백그라운드 세션 파이프라인)은 위치 샘플마다
+// 이 함수를 호출한다. accident-zones.json 이 전국 전체(약 12,780건)이면 postProcessZones
+// 안의 mergeNearbyZones 비용이 커서, 매 샘플마다 재계산하면 JS 스레드가 블로킹되어
+// 보행 종료 버튼/지도가 렉 걸린다. 데이터(require 로 번들에 정적 포함)와 순수 파이프라인은
+// 실행 중 변하지 않으므로, 최초 1회 계산 결과를 모듈 스코프에 캐시하고 이후 호출은 캐시를
+// 반환한다. loadRawAccidentZones/postProcessZones 의 순수성은 유지하고, 캐시는 오직 이
+// 진입점에서만 관리한다. 반환 배열을 소비자가 변형하지 않는다는 기존 전제도 그대로다.
+let cachedAccidentZones: AccidentZone[] | null = null;
+
 export function loadAccidentZones(): AccidentZone[] {
-  return postProcessZones(loadRawAccidentZones());
+  if (cachedAccidentZones === null) {
+    cachedAccidentZones = postProcessZones(loadRawAccidentZones());
+  }
+  return cachedAccidentZones;
 }
 
 // 두 위험구역 원이 실제로 겹치는지 판정하는 순수 헬퍼.

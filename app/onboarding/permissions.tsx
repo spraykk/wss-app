@@ -15,13 +15,18 @@ import {
   requestAlerts,
 } from '../../src/permissions/locationPermissions';
 import { markOnboardingComplete } from '../../src/storage/onboarding';
+import { setAgeBand, AGE_BAND_OPTIONS } from '../../src/storage/ageBand';
+import type { AgeBand } from '../../src/storage/ageBand';
+import { palette, spacing, radius, font, shadow } from '../../src/theme';
 
-type Step = 'whenInUse' | 'always' | 'notifications' | 'done';
+type Step = 'whenInUse' | 'always' | 'notifications' | 'age' | 'done';
 
 export default function OnboardingPermissions() {
   const router = useRouter();
   const [step, setStep] = useState<Step>('whenInUse');
   const [busy, setBusy] = useState(false);
+  // 연령대는 선택 사항이다. 미선택(null)은 통계에서 '미상'으로 집계된다.
+  const [ageBand, setAgeBandState] = useState<AgeBand | null>(null);
 
   const onWhenInUse = async (): Promise<void> => {
     setBusy(true);
@@ -42,10 +47,17 @@ export default function OnboardingPermissions() {
     setBusy(true);
     await requestAlerts();
     setBusy(false);
+    setStep('age');
+  };
+
+  const onAgeContinue = (): void => {
+    // 선택했든 안 했든(null 허용) 다음 단계로 진행한다.
     setStep('done');
   };
 
   const onFinish = async (): Promise<void> => {
+    // 연령대는 최초 1회만 저장한다(선택 사항, 미선택은 null).
+    await setAgeBand(ageBand);
     await markOnboardingComplete();
     // 온보딩 스택을 홈으로 교체(뒤로가기로 온보딩에 되돌아오지 않도록).
     router.replace('/');
@@ -87,6 +99,54 @@ export default function OnboardingPermissions() {
     );
   }
 
+  if (step === 'age') {
+    return (
+      <View style={styles.container}>
+        <View style={styles.card}>
+          <Text style={styles.title}>연령대 (선택)</Text>
+          <Text style={styles.body}>
+            같은 연령대 사용자들과 익명으로 점수를 비교해 볼 수 있도록 연령'대'만
+            선택할 수 있어요. 정확한 나이는 묻지 않으며, 처음 한 번만 물어봅니다.
+            선택하지 않아도 앱은 그대로 이용할 수 있어요.
+          </Text>
+          <Text style={styles.bodyFaint}>
+            위치·경로는 여전히 서버로 전송하지 않습니다. 연령대는 익명 그룹 비교에만 쓰여요.
+          </Text>
+          <View style={styles.chipRow}>
+            {AGE_BAND_OPTIONS.map((option) => {
+              const selected = ageBand === option.key;
+              return (
+                <TouchableOpacity
+                  key={option.key}
+                  // 이미 선택한 밴드를 다시 누르면 해제(미선택 허용).
+                  style={[styles.chip, selected ? styles.chipSelected : null]}
+                  onPress={() => setAgeBandState(selected ? null : option.key)}
+                  activeOpacity={0.85}
+                >
+                  <Text style={[styles.chipText, selected ? styles.chipTextSelected : null]}>
+                    {option.label}
+                  </Text>
+                </TouchableOpacity>
+              );
+            })}
+          </View>
+          <Text style={styles.bodyFaint}>
+            {ageBand === null
+              ? '연령대는 선택 사항이에요. 미선택은 통계에서 "미상"으로 집계됩니다.'
+              : '선택한 연령대는 언제든 바꿀 필요 없이 그대로 유지돼요.'}
+          </Text>
+        </View>
+        <TouchableOpacity
+          style={styles.button}
+          onPress={() => onAgeContinue()}
+          activeOpacity={0.85}
+        >
+          <Text style={styles.buttonText}>다음</Text>
+        </TouchableOpacity>
+      </View>
+    );
+  }
+
   return (
     <StepView
       title="준비 완료"
@@ -107,12 +167,15 @@ function StepView(props: {
 }) {
   return (
     <View style={styles.container}>
-      <Text style={styles.title}>{props.title}</Text>
-      <Text style={styles.body}>{props.body}</Text>
+      <View style={styles.card}>
+        <Text style={styles.title}>{props.title}</Text>
+        <Text style={styles.body}>{props.body}</Text>
+      </View>
       <TouchableOpacity
         style={[styles.button, props.busy ? styles.buttonDisabled : null]}
         disabled={props.busy}
         onPress={() => props.onPress()}
+        activeOpacity={0.85}
       >
         <Text style={styles.buttonText}>{props.cta}</Text>
       </TouchableOpacity>
@@ -121,10 +184,43 @@ function StepView(props: {
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, justifyContent: 'center', padding: 28, gap: 18, backgroundColor: '#fff' },
-  title: { fontSize: 24, fontWeight: '800' },
-  body: { fontSize: 15, lineHeight: 24, color: '#444' },
-  button: { backgroundColor: '#1a7f37', paddingVertical: 16, borderRadius: 999, alignItems: 'center', marginTop: 8 },
+  container: {
+    flex: 1,
+    justifyContent: 'center',
+    padding: spacing.xxl,
+    gap: spacing.xl,
+    backgroundColor: palette.bg,
+  },
+  card: {
+    backgroundColor: palette.surface,
+    borderRadius: radius.lg,
+    padding: spacing.xl,
+    gap: spacing.lg,
+    ...shadow.card,
+  },
+  title: { fontSize: font.title, fontWeight: '800', color: palette.text },
+  body: { fontSize: font.body, lineHeight: 24, color: palette.textMuted },
+  bodyFaint: { fontSize: font.small, lineHeight: 20, color: palette.textFaint },
+  chipRow: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm, marginTop: spacing.sm },
+  chip: {
+    paddingVertical: spacing.sm,
+    paddingHorizontal: spacing.lg,
+    borderRadius: radius.pill,
+    backgroundColor: palette.surfaceAlt,
+    borderWidth: 1,
+    borderColor: palette.border,
+  },
+  chipSelected: { backgroundColor: palette.skyDeep, borderColor: palette.skyDeep },
+  chipText: { fontSize: font.body, color: palette.textMuted, fontWeight: '700' },
+  chipTextSelected: { color: palette.onDark },
+  button: {
+    backgroundColor: palette.skyDeep,
+    paddingVertical: spacing.lg,
+    borderRadius: radius.pill,
+    alignItems: 'center',
+    marginTop: spacing.sm,
+    ...shadow.button,
+  },
   buttonDisabled: { opacity: 0.5 },
-  buttonText: { color: '#fff', fontSize: 18, fontWeight: '700' },
+  buttonText: { color: palette.onDark, fontSize: font.subtitle, fontWeight: '800' },
 });

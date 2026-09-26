@@ -1,36 +1,128 @@
-import { useEffect, useRef, useState } from 'react';
-import { Platform, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { ActivityIndicator, Platform, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import MapView, { Circle, Marker, PROVIDER_GOOGLE } from 'react-native-maps';
+import type { Region } from 'react-native-maps';
 import * as Location from 'expo-location';
-import { computeOverlapCounts, loadAccidentZones } from '../src/data/accidentZones';
+import type { AccidentZone } from '../src/types';
+import { computeOverlapCounts, loadRawAccidentZones, ZONE_RADIUS_SCALE } from '../src/data/accidentZones';
+import { palette, spacing, radius, font, shadow } from '../src/theme';
 
-const zones = loadAccidentZones();
-// 구역별로 "다른 위험구역과 원이 겹치는 개수"(마커 설명용) - zones와 같은 순서의 배열이라
-// id 중복 문제(accidentZones.ts의 postProcessZones 설명 참고)에서 자유롭다.
-// (computeOverlapCounts 는 내부에서 computeOverlapPairs 로 실제 겹치는 쌍을 센다.)
-const overlapCounts = computeOverlapCounts(zones);
+// ─────────────────────────────────────────────────────────────────────────────
+// 성능 주의(전국 12,780건): 이 화면은 "표시 전용"이다. 전국 데이터를 전부
+// <Circle>+<Marker> 로 그리면 약 2.5만 개의 지도 오브젝트가 생겨 실기기에서
+// 프리즈한다. 따라서 아래 두 가지로 렌더 부하를 상수 수준으로 억제한다.
+//   (1) 뷰포트 필터: 현재 화면 region(경계 박스) 안에 드는 zone 만 그린다.
+//   (2) 하드 상한(MAX_RENDERED_ZONES): 아주 축소된 줌 레벨에서 경계 박스가
+//       넓어져도 오브젝트 수가 폭발하지 않도록 사고건수 많은 순 상위 N개만.
+//
+// 또한 dedup(mergeNearbyZones)/전역 겹침계산(computeOverlapCounts)은 전국
+// 규모에서 O(n^2)(약 1.6억 쌍)라 모듈 로드 시 블로킹된다. 이 화면은 표시 전용
+// 이므로 무거운 dedup 을 생략한 loadRawAccidentZones() 를 useEffect 로 1회
+// 로드하고(로딩 상태 표시), 겹침 개수는 "화면에 그리는 subset(수백 개)" 에
+// 대해서만 계산한다. 점수 계산 경로(loadAccidentZones/dedup)는 그대로 둔다.
+// ─────────────────────────────────────────────────────────────────────────────
 
-const initialRegion = {
-  latitude: zones[0]?.latitude ?? 37.4812,
-  longitude: zones[0]?.longitude ?? 126.9528,
+// 한 번에 지도에 그릴 수 있는 최대 위험구역 수(원+마커 오브젝트 폭발 방지 하드 상한).
+const MAX_RENDERED_ZONES = 300;
+
+// 위치 권한이 없거나 초기 위치를 못 구했을 때의 기본 region(서울대입구 부근).
+const DEFAULT_REGION: Region = {
+  latitude: 37.4812,
+  longitude: 126.9528,
   latitudeDelta: 0.03,
   longitudeDelta: 0.03,
 };
 
+// 현재 region(경계 박스) 안에 드는 zone 만 남기고, 상한을 초과하면 사고건수 많은
+// 순 상위 N개만 반환하는 순수 헬퍼. region 이 아직 없으면 빈 배열(로드 직후 프레임).
+function selectVisibleZones(zones: AccidentZone[], region: Region | null): AccidentZone[] {
+  if (!region) return [];
+  const halfLat = region.latitudeDelta / 2;
+  const halfLon = region.longitudeDelta / 2;
+  const minLat = region.latitude - halfLat;
+  const maxLat = region.latitude + halfLat;
+  const minLon = region.longitude - halfLon;
+  const maxLon = region.longitude + halfLon;
+
+  const inView = zones.filter(
+    (z) =>
+      z.latitude >= minLat &&
+      z.latitude <= maxLat &&
+      z.longitude >= minLon &&
+      z.longitude <= maxLon
+  );
+
+  if (inView.length <= MAX_RENDERED_ZONES) return inView;
+
+  // 상한 초과(아주 축소된 줌): 사고건수 많은 순 상위 N개만.
+  return [...inView]
+    .sort((a, b) => b.accidentCount3y - a.accidentCount3y)
+    .slice(0, MAX_RENDERED_ZONES);
+}
+
 export default function MapScreen() {
   const mapRef = useRef<MapView | null>(null);
   const [hasLocationPermission, setHasLocationPermission] = useState(false);
+  const [zones, setZones] = useState<AccidentZone[] | null>(null);
+  const [region, setRegion] = useState<Region | null>(null);
+  const [initialRegion, setInitialRegion] = useState<Region | null>(null);
 
+  // 데이터 로드 + 초기 region 결정(권한 있으면 현재 위치 중심). 표시 전용이라
+  // 무거운 dedup 없이 raw 를 1회 로드한다(전국 12,780건도 즉시 로드 가능).
   useEffect(() => {
     let cancelled = false;
     (async () => {
+      const loaded = loadRawAccidentZones();
+      if (!cancelled) setZones(loaded);
+
       const { status } = await Location.requestForegroundPermissionsAsync();
-      if (!cancelled) setHasLocationPermission(status === 'granted');
+      const granted = status === 'granted';
+      if (!cancelled) setHasLocationPermission(granted);
+
+      let start: Region = { ...DEFAULT_REGION };
+      if (granted) {
+        try {
+          const loc = await Location.getCurrentPositionAsync({});
+          start = {
+            latitude: loc.coords.latitude,
+            longitude: loc.coords.longitude,
+            latitudeDelta: 0.02,
+            longitudeDelta: 0.02,
+          };
+        } catch {
+          // 현재 위치를 못 구하면 기본 region 사용
+        }
+      }
+      if (!cancelled) {
+        setInitialRegion(start);
+        setRegion(start);
+      }
     })();
     return () => {
       cancelled = true;
     };
   }, []);
+
+  // 화면에 실제로 그릴 subset(뷰포트 필터 + 하드 상한). region/zones 변경 시에만 재계산.
+  // 지도는 성능상 dedup 을 생략한 raw 경로(loadRawAccidentZones)를 쓰므로 postProcessZones
+  // 의 반경 축소(ZONE_RADIUS_SCALE)가 적용되지 않은 원본 radiusMeters 를 가진다. 표시 반경이
+  // 점수 경로(postProcessZones)와 동일하게 축소되도록, 여기서 radiusMeters 에 스케일을 곱한
+  // subset 을 만들어 원 렌더와 겹침 계산 모두 이 축소 반경을 기준으로 삼는다(시각/설명 일치).
+  const visibleZones = useMemo(
+    () =>
+      zones
+        ? selectVisibleZones(zones, region).map((z) => ({
+            ...z,
+            radiusMeters: z.radiusMeters * ZONE_RADIUS_SCALE,
+          }))
+        : [],
+    [zones, region]
+  );
+
+  // 겹침 개수는 "그리는 subset(수백 개)" 에 대해서만 계산한다(전역 O(n^2) 제거).
+  // visibleZones 는 이미 축소 반경(ZONE_RADIUS_SCALE 적용)이므로, 겹침 판정도 표시 원과
+  // 동일한 반경 기준으로 이뤄져 "겹쳐 보이는데 카운트는 미축소" 불일치가 생기지 않는다.
+  const overlapCounts = useMemo(() => computeOverlapCounts(visibleZones), [visibleZones]);
 
   const goToMyLocation = async () => {
     try {
@@ -49,6 +141,16 @@ export default function MapScreen() {
     }
   };
 
+  // 초기 region 이 정해지기 전(데이터/권한 확인 중)에는 로딩 화면을 보여준다.
+  if (!initialRegion || !zones) {
+    return (
+      <View style={[styles.container, styles.loading]}>
+        <ActivityIndicator size="large" color={palette.skyDeep} />
+        <Text style={styles.loadingText}>위험 지도를 불러오는 중…</Text>
+      </View>
+    );
+  }
+
   return (
     <View style={styles.container}>
       <View style={styles.mapWrapper}>
@@ -57,13 +159,15 @@ export default function MapScreen() {
           provider={Platform.OS === 'android' ? PROVIDER_GOOGLE : undefined}
           style={styles.map}
           initialRegion={initialRegion}
+          onRegionChangeComplete={setRegion}
           showsUserLocation={hasLocationPermission}
           showsMyLocationButton={false}
         >
           {/* 위험구역을 반투명 빨간 원으로 그린다. 원이 겹치는 지점은 반투명 fill 의 alpha 가
-              자연스럽게 누적되어 더 진한 빨강으로 보인다(별도 오버레이 없이 "겹칠수록 진한 빨강"). */}
-          {zones.map((z, i) => (
-            <View key={z.id}>
+              자연스럽게 누적되어 더 진한 빨강으로 보인다(별도 오버레이 없이 "겹칠수록 진한 빨강").
+              화면에 보이는 subset(visibleZones)만 그려 오브젝트 수를 상수 수준으로 억제한다. */}
+          {visibleZones.map((z, i) => (
+            <View key={`${z.id}#${i}`}>
               <Circle
                 center={{ latitude: z.latitude, longitude: z.longitude }}
                 radius={z.radiusMeters}
@@ -97,6 +201,10 @@ export default function MapScreen() {
           잠시 멈춰보세요.
         </Text>
         <Text style={styles.legendText}>
+          🗺️ 지도를 이동/확대하면 그 근처의 위험구역을 표시합니다. (전국 데이터가 많아 화면에
+          보이는 구역만 그립니다.)
+        </Text>
+        <Text style={styles.legendText}>
           🔴 겹쳐서 더 진한 빨강 = 위험구역이 중첩된 지점입니다. 점수 계산에도 더 큰 가중치가
           반영됩니다.
         </Text>
@@ -120,25 +228,30 @@ export default function MapScreen() {
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1 },
+  container: { flex: 1, backgroundColor: palette.bg },
+  loading: { alignItems: 'center', justifyContent: 'center', gap: spacing.md },
+  loadingText: { fontSize: font.body, color: palette.textMuted },
   mapWrapper: { flex: 1 },
   map: { flex: 1 },
   myLocationButton: {
     position: 'absolute',
-    right: 16,
-    bottom: 16,
-    backgroundColor: 'white',
-    paddingHorizontal: 14,
-    paddingVertical: 10,
-    borderRadius: 999,
-    elevation: 3,
-    shadowColor: '#000',
-    shadowOpacity: 0.15,
-    shadowRadius: 4,
-    shadowOffset: { width: 0, height: 2 },
+    right: spacing.lg,
+    bottom: spacing.lg,
+    backgroundColor: palette.surface,
+    paddingHorizontal: spacing.lg,
+    paddingVertical: spacing.md,
+    borderRadius: radius.pill,
+    ...shadow.button,
   },
-  myLocationButtonText: { fontWeight: '600', color: '#2563eb' },
-  legend: { padding: 14, backgroundColor: '#f8fafc', gap: 4 },
-  legendText: { fontSize: 12, color: '#334155', lineHeight: 18 },
-  sampleWarn: { fontSize: 12, color: '#dc2626', marginTop: 6, fontWeight: '600' },
+  myLocationButtonText: { fontWeight: '700', color: palette.skyDeep, fontSize: font.body },
+  legend: {
+    padding: spacing.lg,
+    backgroundColor: palette.surface,
+    gap: spacing.xs,
+    borderTopLeftRadius: radius.lg,
+    borderTopRightRadius: radius.lg,
+    ...shadow.card,
+  },
+  legendText: { fontSize: font.caption, color: palette.textMuted, lineHeight: 18 },
+  sampleWarn: { fontSize: font.caption, color: palette.dangerText, marginTop: spacing.sm, fontWeight: '700' },
 });
