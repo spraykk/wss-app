@@ -22,6 +22,8 @@ const {
   createInitialPostureUsageState,
   classifyPostureInterval,
   isSustainedUse,
+  createInitialPostureContinuityState,
+  stepPostureContinuity,
 } = await import('../src/sensors/postureUsageDetector.ts');
 
 const { computeUsageFromSegments } = await import('../src/session/usageClassification.ts');
@@ -197,6 +199,120 @@ assert('USE_SUSTAIN_MS === 3000', USE_SUSTAIN_MS === 3000, String(USE_SUSTAIN_MS
   // 레거시 폴백: 밴드/no-use 필드 없음 + smartphoneUseMinutes>0 => no-use 로 접음(확정 사용 아님).
   const totals = computeUsageFromSegments([{ smartphoneUseMinutes: 6 }]);
   assert('레거시 smartphoneUseMinutes => no-use 로 접음', close(totals.confirmedUseMinutes, 0) && close(totals.noUseMinutes, 6));
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// FEAT-001: 고빈도(약 200ms) 자이로 스트림 지속 추적기 stepPostureContinuity 검증.
+//
+// 핵심 결함(사용자 증상: 점수 안 떨어짐)은 지속을 5초 위치 이벤트 스냅샷으로만 갱신해,
+// 5초 스냅샷 중 하나라도 pitch<10 이면 지속이 끊긴 것이었다. 이제 200ms 스트림 자체에서
+// pitch>=10 연속 유지 시간을 추적한다. 아래 케이스가 그 동작을 200ms 관점에서 증명한다.
+// ═════════════════════════════════════════════════════════════════════════════
+
+const STEP_MS = 200; // 자이로 콜백 간격(startPostureSensors 의 POSTURE_UPDATE_INTERVAL_MS 와 동일).
+
+// ── (a) 200ms 로 pitch>=10 을 walking=true 로 흘리면 정확히 3000ms 경계에서 isUse=true ─
+{
+  let state = createInitialPostureContinuityState();
+  const startMs = 1_000_000; // 임의 시작.
+  const results: Array<{ nowMs: number; sustainedMs: number; isUse: boolean }> = [];
+  // t=start(sustained 0) 부터 200ms 간격으로 4000ms 까지 흘린다.
+  for (let t = 0; t <= 4000; t += STEP_MS) {
+    const r = stepPostureContinuity(state, { pitchDeg: 20, walking: true, nowMs: startMs + t });
+    state = r.next;
+    results.push({ nowMs: startMs + t, sustainedMs: r.sustainedMs, isUse: r.isUse });
+  }
+  const at2800 = results.find((r) => r.nowMs === startMs + 2800);
+  const at3000 = results.find((r) => r.nowMs === startMs + 3000);
+  const at3200 = results.find((r) => r.nowMs === startMs + 3200);
+  assert('200ms 스트림: 2800ms 시점은 아직 no-use', at2800 !== undefined && at2800.isUse === false, `isUse=${at2800?.isUse}`);
+  assert('200ms 스트림: 정확히 3000ms 경계에서 isUse(포함)', at3000 !== undefined && at3000.isUse === true && at3000.sustainedMs === 3000, `sustainedMs=${at3000?.sustainedMs} isUse=${at3000?.isUse}`);
+  assert('200ms 스트림: 3200ms 이후 계속 isUse', at3200 !== undefined && at3200.isUse === true, `isUse=${at3200?.isUse}`);
+}
+
+// ── (b) 중간에 한 샘플이라도 pitch<10 이면 지속이 끊겨 다시 3초를 새로 채워야 isUse ────
+//    (이게 결함의 핵심: 5초 스냅샷이 아니라 200ms 스트림에서 지속이 추적/리셋됨을 보인다.)
+{
+  let state = createInitialPostureContinuityState();
+  const startMs = 2_000_000;
+  // 0..2800ms 까지 pitch>=10 로 램프업(아직 3초 미만) => 아직 no-use.
+  let t = 0;
+  for (; t <= 2800; t += STEP_MS) {
+    state = stepPostureContinuity(state, { pitchDeg: 30, walking: true, nowMs: startMs + t }).next;
+  }
+  // 3000ms 직전(2800)에서 단 한 샘플만 pitch<10 로 튐 => 지속 리셋.
+  t += STEP_MS; // 3000
+  const broken = stepPostureContinuity(state, { pitchDeg: 5, walking: true, nowMs: startMs + t });
+  state = broken.next;
+  assert('한 샘플 pitch<10 => 지속 끊김(sustainedSinceMs=null)', broken.next.sustainedSinceMs === null && broken.isUse === false, `since=${broken.next.sustainedSinceMs}`);
+  // 튄 시점(3000) 근처에서는 원래라면 3초를 넘겼겠지만, 리셋되어 다시 3초를 새로 채워야 한다.
+  const resumeStart = startMs + t + STEP_MS; // 3200 부터 재개
+  let resumed: { sustainedMs: number; isUse: boolean } = { sustainedMs: 0, isUse: false };
+  for (let dt = 0; dt <= 3000; dt += STEP_MS) {
+    const r = stepPostureContinuity(state, { pitchDeg: 30, walking: true, nowMs: resumeStart + dt });
+    state = r.next;
+    resumed = { sustainedMs: r.sustainedMs, isUse: r.isUse };
+    // 재개 후 3000ms 미만 동안에는 절대 isUse 가 되면 안 된다.
+    if (dt < 3000) {
+      assert(`끊김 후 재개 ${dt}ms 는 아직 no-use`, r.isUse === false, `isUse=${r.isUse} @${dt}`);
+    }
+  }
+  assert('끊김 후 다시 정확히 3000ms 채우면 isUse', resumed.isUse === true && resumed.sustainedMs === 3000, `sustainedMs=${resumed.sustainedMs}`);
+}
+
+// ── (c) walking=false 면 pitch 가 높아도 절대 isUse 아님 ──────────────────────
+{
+  let state = createInitialPostureContinuityState();
+  const startMs = 3_000_000;
+  let anyUse = false;
+  for (let t = 0; t <= 6000; t += STEP_MS) {
+    const r = stepPostureContinuity(state, { pitchDeg: 45, walking: false, nowMs: startMs + t });
+    state = r.next;
+    if (r.isUse) anyUse = true;
+    assert(`walking=false@${t} => 지속 리셋`, r.next.sustainedSinceMs === null && r.sustainedMs === 0, `since=${r.next.sustainedSinceMs}`);
+  }
+  assert('walking=false: 고 pitch 를 오래 유지해도 isUse 없음', anyUse === false);
+}
+
+// ── (d) 뮤테이션 민감: pitch 임계(10) / 지속(3000) 경계를 직접 단언 ──────────────
+{
+  // pitch 정확히 10 vs 9.999: 10 은 지속 유지, 9.999 는 즉시 리셋.
+  const started = { sustainedSinceMs: 500_000, lastSampleMs: 500_000 };
+  const at10 = stepPostureContinuity(started, { pitchDeg: 10, walking: true, nowMs: 503_000 });
+  assert('pitch==10(임계 포함) => 지속 유지', at10.next.sustainedSinceMs === 500_000, `since=${at10.next.sustainedSinceMs}`);
+  assert('pitch==10 + held==3000 => isUse', at10.isUse === true && at10.sustainedMs === 3000, `sustainedMs=${at10.sustainedMs}`);
+  const below = stepPostureContinuity(started, { pitchDeg: 9.999, walking: true, nowMs: 503_000 });
+  assert('pitch==9.999(<10) => 지속 리셋, no-use', below.next.sustainedSinceMs === null && below.isUse === false, `since=${below.next.sustainedSinceMs}`);
+}
+{
+  // held 정확히 3000 vs 2999: 3000 은 isUse, 2999 는 아님(USE_SUSTAIN_MS 뮤테이션 민감).
+  const started = { sustainedSinceMs: 0, lastSampleMs: 0 };
+  const held3000 = stepPostureContinuity(started, { pitchDeg: 20, walking: true, nowMs: 3000 });
+  assert('held==3000(경계 포함) => isUse', held3000.isUse === true && held3000.sustainedMs === 3000, `sustainedMs=${held3000.sustainedMs}`);
+  const held2999 = stepPostureContinuity(started, { pitchDeg: 20, walking: true, nowMs: 2999 });
+  assert('held==2999 => no-use', held2999.isUse === false && held2999.sustainedMs === 2999, `sustainedMs=${held2999.sustainedMs}`);
+}
+
+// ── nowMs 비유한 / 시계 되감김 방어 ──────────────────────────────────────────
+{
+  const started = { sustainedSinceMs: 0, lastSampleMs: 0 };
+  const nan = stepPostureContinuity(started, { pitchDeg: 20, walking: true, nowMs: Number.NaN });
+  assert('nowMs 비유한 => 리셋, no-use', nan.next.sustainedSinceMs === null && nan.isUse === false);
+  const rewind = stepPostureContinuity({ sustainedSinceMs: 10_000, lastSampleMs: 10_000 }, { pitchDeg: 20, walking: true, nowMs: 2000 });
+  assert('시계 되감김 => nowMs 로 재시작', rewind.next.sustainedSinceMs === 2000 && rewind.sustainedMs === 0 && rewind.isUse === false, `since=${rewind.next.sustainedSinceMs}`);
+}
+
+// ── (e) 순수성: prev 상태를 변형하지 않는다 ──────────────────────────────────
+{
+  const state = createInitialPostureContinuityState();
+  const snapshot = JSON.stringify(state);
+  stepPostureContinuity(state, { pitchDeg: 20, walking: true, nowMs: 12345 });
+  assert('stepPostureContinuity 이 입력 상태를 변형하지 않음(순수)', JSON.stringify(state) === snapshot);
+  // held 도달 상태에서도 prev 불변 확인.
+  const active = { sustainedSinceMs: 100, lastSampleMs: 100 };
+  const activeSnap = JSON.stringify(active);
+  stepPostureContinuity(active, { pitchDeg: 20, walking: true, nowMs: 4000 });
+  assert('stepPostureContinuity(지속중)도 prev 불변', JSON.stringify(active) === activeSnap);
 }
 
 if (failures > 0) {

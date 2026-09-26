@@ -146,3 +146,93 @@ export function classifyPostureInterval(
     next: { sustainedSinceMs },
   };
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 고빈도(약 200ms) 자이로 스트림용 지속 추적기 (FEAT-001 핵심 결함 수정)
+//
+// 배경/결함: 기존 classifyPostureInterval 는 "위치 이벤트가 오는 순간"(timeInterval:5000,
+// 약 5초마다)의 pitch 한 점으로만 지속을 갱신했다. 그래서 5초 간격 스냅샷 중 하나라도
+// pitch<10(팔 흔들림/순간 자세 변화)이면 지속이 끊겨 '사용'이 거의 잡히지 않았다
+// (사용자 증상: 점수가 안 떨어짐). 실제로는 DeviceMotion/Accelerometer 가 약 200ms 마다
+// pitch 를 갱신하므로, 이 고빈도 스트림 자체에서 "pitch>=10 이 연속 유지된 시간"을 추적하면
+// 5초 스냅샷의 착시 없이 3초 지속을 정직하게 판정할 수 있다.
+//
+// [불변] 임계값은 그대로다: pitch 하한 PITCH_USE_THRESHOLD_DEG=10, 지속 USE_SUSTAIN_MS=3000.
+// 바뀌는 것은 "어느 신호(5초 위치 스냅샷 대신 200ms 자이로)에서 지속을 추적하느냐"뿐이다.
+
+// 고빈도 지속 추적 상태(순수). classifyPostureInterval 의 PostureUsageState 와 별개로 둔다
+// (하위호환: 기존 상태/함수 시그니처를 건드리지 않는다). lastSampleMs 는 진단/디버깅용으로
+// 마지막으로 처리한 샘플 시각을 보관한다(판정 로직에는 sustainedSinceMs 만 쓰인다).
+export interface PostureContinuityState {
+  // 걷는 중 pitch 가 임계를 처음 넘은 시각(ms epoch). 지속이 끊기면 null.
+  sustainedSinceMs: number | null;
+  // 마지막으로 step 한 샘플의 시각(ms epoch). 아직 없으면 null(진단용).
+  lastSampleMs: number | null;
+}
+
+// 초기 상태 팩토리(순수).
+export function createInitialPostureContinuityState(): PostureContinuityState {
+  return { sustainedSinceMs: null, lastSampleMs: null };
+}
+
+// step 결과: 다음 상태 + 현재 지속 시간(ms) + 현재 '사용 중'(isUse) 여부.
+export interface PostureContinuityResult {
+  next: PostureContinuityState;
+  // 현재 pitch>=10 이 연속 유지된 시간(ms). 지속 중이 아니면 0.
+  sustainedMs: number;
+  // sustainedMs >= USE_SUSTAIN_MS 이면 true(경계 3000 포함, >=).
+  isUse: boolean;
+}
+
+// 핵심: 이전 지속 상태 + 한 개의 고빈도 자이로 샘플({pitchDeg, walking, nowMs})로부터
+// (다음 상태, 지속 시간 ms, isUse)를 계산하는 순수 함수. 매 자이로 콜백(약 200ms)마다 호출한다.
+//
+// 규칙(임계 불변):
+//  - walking=true AND Number.isFinite(pitchDeg) AND pitchDeg>=PITCH_USE_THRESHOLD_DEG:
+//    지속 유지. sustainedSinceMs 가 null 이면 nowMs 로 시작. 단 nowMs 비유한이면 아래 리셋 경로.
+//    sustainedMs = nowMs - sustainedSinceMs, isUse = sustainedMs >= USE_SUSTAIN_MS.
+//  - 그 외(안 걸음 / pitch<10 / pitch 또는 nowMs 비유한): sustainedSinceMs=null 로 리셋,
+//    sustainedMs=0, isUse=false.
+//  - 시계 되감김(nowMs < sustainedSinceMs)은 보수적으로 nowMs 로 재시작(그 샘플은 sustainedMs=0).
+//  - 순수: prev 를 변형하지 않고 새 객체를 반환한다.
+export function stepPostureContinuity(
+  prev: PostureContinuityState,
+  sample: PostureSample
+): PostureContinuityResult {
+  const { pitchDeg, walking, nowMs } = sample;
+
+  // 지속을 끊는 조건들 => 리셋. nowMs 가 비유한이면 lastSampleMs 는 갱신하지 않는다
+  // (진단 시각의 의미를 유지). 그 외 리셋은 lastSampleMs 를 nowMs 로 갱신한다.
+  const breaksRun =
+    !walking ||
+    !Number.isFinite(nowMs) ||
+    !Number.isFinite(pitchDeg) ||
+    pitchDeg < PITCH_USE_THRESHOLD_DEG;
+
+  if (breaksRun) {
+    return {
+      next: {
+        sustainedSinceMs: null,
+        lastSampleMs: Number.isFinite(nowMs) ? nowMs : prev.lastSampleMs,
+      },
+      sustainedMs: 0,
+      isUse: false,
+    };
+  }
+
+  // 걷는 중 + pitch>=임계 + nowMs 유한.
+  let sustainedSinceMs = prev.sustainedSinceMs;
+  if (sustainedSinceMs === null || nowMs < sustainedSinceMs) {
+    // 지속 시작이 없거나 시계 되감김 => 지금부터 재시작.
+    sustainedSinceMs = nowMs;
+  }
+
+  const sustainedMs = nowMs - sustainedSinceMs;
+  const isUse = sustainedMs >= USE_SUSTAIN_MS;
+
+  return {
+    next: { sustainedSinceMs, lastSampleMs: nowMs },
+    sustainedMs,
+    isUse,
+  };
+}

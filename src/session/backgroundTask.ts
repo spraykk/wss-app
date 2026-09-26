@@ -39,10 +39,10 @@ import { classifyMotion, createInitialMotionState } from '../sensors/motionClass
 import type { MotionState } from '../sensors/motionClassifier';
 import { gravityToPitchRoll } from '../sensors/postureMath';
 import {
-  createInitialPostureUsageState,
-  classifyPostureInterval,
+  createInitialPostureContinuityState,
+  stepPostureContinuity,
 } from '../sensors/postureUsageDetector';
-import type { PostureUsageState } from '../sensors/postureUsageDetector';
+import type { PostureContinuityState } from '../sensors/postureUsageDetector';
 import { hadRecentInteraction } from './interactionTracker';
 
 // 세션 파이프라인 백그라운드 태스크 이름. TaskManager.defineTask 는 모듈 로드 시 1회만
@@ -98,8 +98,31 @@ const POSTURE_UPDATE_INTERVAL_MS = 200;
 // 최신 자세 샘플(pitch 도 + 관측 시각 ms). 아직 없으면 null(=> no-use).
 let latestPitchSample: { pitchDeg: number; atMs: number } | null = null;
 
-// 자세 사용 감지 지속 상태(순수 상태기계 postureUsageDetector 의 상태).
-let postureUsageState: PostureUsageState = createInitialPostureUsageState();
+// [하위호환] pitch>=10 3초 지속의 순수 상태머신은 postureUsageDetector.ts 에 남아 있고
+// (classifyPostureInterval/isSustainedUse/PostureUsageState), verify-posture-usage 가 계속
+// 검증한다. 다만 backgroundTask 의 사용 귀속 주 경로는 아래 postureContinuityState(200ms 자이로
+// 스트림 추적)로 이동했다. 5초 위치 이벤트 순간의 pitch 한 점으로 지속을 갱신하던 방식이 결함의
+// 원인이었기 때문이다(스냅샷 하나가 pitch<10 로 튀면 지속이 끊겨 '사용'이 거의 안 잡힘).
+
+// ── FEAT-001: 고빈도(약 200ms) 자이로 스트림 기반 지속 추적 상태 ──────────────
+// 핵심 결함 수정. 기존에는 5초 위치 이벤트가 오는 순간의 pitch 한 점으로만 지속을 갱신해,
+// 5초 스냅샷 중 하나라도 pitch<10 이면 지속이 끊겨 '사용'이 거의 안 잡혔다. 이제 자이로 콜백
+// (약 200ms)마다 stepPostureContinuity 로 "pitch>=10 연속 유지 시간"을 자체 추적하고,
+// processLocationSample 은 그 결과(현재 isUse)를 읽어 elapsedMinutes 를 use/no-use 로 귀속한다.
+let postureContinuityState: PostureContinuityState = createInitialPostureContinuityState();
+
+// 자이로 콜백이 참조할 최신 보행 판정 신호. 위치 이벤트(processLocationSample /
+// shouldSkipAsVehicle)에서 갱신한다. atMs 로 신선도를 판단해, 위치 신호가 아직 없거나 오래되면
+// 보수적으로 walking=false 로 간주(=> 지속 시작 못 함 => no-use)해 감점 뻥튀기를 막는다.
+let latestWalking: { walking: boolean; atMs: number } | null = null;
+
+// 최신 자이로 지속 추적 결과(진단/귀속용). isUse 는 "지금 pitch>=10 이 3초 이상 연속 유지 중"인가.
+let latestPostureContinuity: { isUse: boolean; sustainedMs: number; atMs: number } | null = null;
+
+// latestWalking 신선도 임계(ms). 위치 이벤트 간격(timeInterval:5000)과 stale 판정
+// (POSTURE_SAMPLE_STALE_MS)에 맞춰, 최근 위치 이벤트가 이 시간 내일 때만 그 walking 값을 신뢰한다.
+// 그보다 오래되면 보수적으로 walking=false 로 간주한다(위치 신호 공백 = 사용 인정 안 함).
+const WALKING_SIGNAL_STALE_MS = 8000;
 
 // 자세 센서 구독 핸들(세션 동안 유지, 종료 시 해제).
 let postureMotionSub: { remove: () => void } | null = null;
@@ -114,7 +137,26 @@ export function startPostureSensors(): void {
 
   const applyGravity = (x: number, y: number, z: number): void => {
     const pr = gravityToPitchRoll({ x, y, z });
-    latestPitchSample = { pitchDeg: pr.pitchDeg, atMs: Date.now() };
+    const nowMs = Date.now();
+    latestPitchSample = { pitchDeg: pr.pitchDeg, atMs: nowMs };
+
+    // FEAT-001: 이 고빈도 자이로 샘플(약 200ms)로 pitch>=10 연속 유지 시간을 자체 추적한다.
+    // 보행 신호는 위치 이벤트에서 갱신되는 latestWalking 을 참조하되, 신선(WALKING_SIGNAL_STALE_MS
+    // 이내)할 때만 그 walking 값을 신뢰한다. 위치 신호가 아직 없거나 오래되면 보수적으로
+    // walking=false 로 간주해 지속을 시작하지 않는다(=> no-use, 감점 뻥튀기 방지).
+    const walkingFresh =
+      latestWalking !== null &&
+      Number.isFinite(latestWalking.atMs) &&
+      nowMs - latestWalking.atMs <= WALKING_SIGNAL_STALE_MS;
+    const walking = walkingFresh ? latestWalking.walking : false;
+
+    const step = stepPostureContinuity(postureContinuityState, {
+      pitchDeg: pr.pitchDeg,
+      walking,
+      nowMs,
+    });
+    postureContinuityState = step.next;
+    latestPostureContinuity = { isUse: step.isUse, sustainedMs: step.sustainedMs, atMs: nowMs };
   };
 
   const startAccel = (): void => {
@@ -169,7 +211,9 @@ export function stopPostureSensors(): void {
   postureAccelSub = null;
   postureUsingAccel = false;
   latestPitchSample = null;
-  postureUsageState = createInitialPostureUsageState();
+  postureContinuityState = createInitialPostureContinuityState();
+  latestPostureContinuity = null;
+  latestWalking = null;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -215,17 +259,20 @@ export async function processLocationSample(
   const isEarOccluded = isEarEffectivelyOccluded(audioEnv);
   const timeBand = getCurrentTimeBand(now);
 
-  // 스마트폰 사용 시간(자세 기반 판정 - FEAT-003). 예전에는 경과 보행시간 전체를 곧바로
+  // 스마트폰 사용 시간(자세 기반 판정). 예전에는 경과 보행시간 전체를 곧바로
   // smartphoneUseMinutes 로 취급했고(주머니에 넣고 걸어도 전 구간 감점되던 근본 오류), 그 뒤
-  // Option A(Step 1)에서는 인앱 터치만 confirmedUse 로 인정하고 나머지를 unknownUse 로 두었다.
-  // 이제 사용 판정의 소스를 "자세(보행 중 화면 보기)"로 바꾼다: 모듈 스코프에 유지되는 최신
-  // pitch(도)와 지속 상태(postureUsageState)를 classifyPostureInterval 에 넣어 이 구간의 경과분을
-  // use/no-use 로 이분한다. 사용 인정 조건은 walking=true 이며 pitch>=10deg 를 3초 이상 지속
-  // (postureUsageDetector 의 실측 기반 설계값)일 때뿐이다.
+  // Option A 에서는 인앱 터치만 confirmedUse 로 인정하고 나머지를 unknownUse 로 두었다.
+  // 그 다음 사용 판정의 소스를 "자세(보행 중 화면 보기)"로 옮겼는데, 지속 추적을 5초 위치
+  // 이벤트 순간의 pitch 한 점으로만 갱신해 5초 스냅샷 중 하나라도 pitch<10 로 튀면 지속이 끊겨
+  // '사용'이 거의 안 잡히는 결함이 있었다(사용자 증상: 점수 안 떨어짐).
   //
-  // [센서 공백 => no-use] 최신 자세 샘플이 아직 없거나(구독 직후) 신선하지 않으면 보수적으로
-  // no-use 로 귀속한다("모르면 사용으로 감점하지 않는다", 사용자 결정 '가'). latestPitchSample
-  // 이 null 이면 walking=false 로 넘겨 지속을 끊고 전 구간을 no-use 로 만든다.
+  // [FEAT-001] 이제 지속 추적을 200ms 자이로 콜백(startPostureSensors 의 applyGravity)에서 매
+  // 샘플마다 stepPostureContinuity 로 수행하고, 여기서는 그 결과(현재 isUse)를 읽어 이 구간의
+  // 경과분을 use/no-use 로 귀속한다. 임계는 그대로다: walking=true 이며 pitch>=10deg 를 3초 이상
+  // 연속 유지(postureUsageDetector 의 실측 기반 설계값)일 때만 사용.
+  //
+  // [센서 공백 => no-use] 최신 자이로 샘플/지속 추적 결과가 없거나(구독 직후) 신선하지 않으면
+  // 보수적으로 no-use 로 귀속한다("모르면 사용으로 감점하지 않는다", 사용자 결정 '가').
   //
   // [정직성 · 확정 인앱 터치 OR-in] 자세 신호와 별개로, 확인 창 안의 실제 인앱 터치가 있었던
   // 구간은 (걷는 중이라면) "확실한 사용"이므로 use 로 함께 인정한다(설계 선택). 이는 자세를
@@ -237,25 +284,35 @@ export async function processLocationSample(
   // 종료할 수 있고 백그라운드 모션 연속성을 코드로 보장할 수 없다. 종료/중단된 구간은 샘플이
   // 오지 않아 자연히 no-use 로 귀속된다(감점 뻥튀기 없음). 이 한계는 실기기에서 검증할 항목이다.
   const nowMs = now.getTime();
+
+  // FEAT-001: 자이로 콜백(약 200ms)이 참조할 보행 신호를 갱신한다. 여기 도달한 위치 샘플은
+  // 상위에서 이미 vehicle 이 걸러졌으므로 호출부가 walking 을 넘긴다(정상 보행 경로는 true).
+  latestWalking = { walking, atMs: nowMs };
+
+  // 사용 귀속의 주 경로(핵심 결함 수정): 위치 이벤트 순간의 pitch 한 점(5초 스냅샷)으로
+  // classifyPostureInterval 을 돌리던 방식 대신, 자이로가 200ms 스트림에서 계속 추적해 온
+  // "현재 사용 지속 상태(isUse: pitch>=10 이 3초 이상 연속 유지 중)"를 읽어 이 구간의
+  // elapsedMinutes 를 use/no-use 로 귀속한다. 그래야 5초 스냅샷 중 하나가 pitch<10 로 튀어도
+  // 자이로 스트림이 본 실제 지속이 반영된다.
+  //
+  // [센서 공백 => no-use / 정직성] 최신 자이로 샘플(latestPitchSample.atMs)이 신선
+  // (POSTURE_SAMPLE_STALE_MS 이내)할 때만 자이로 기반 사용을 인정한다. 자이로 공백(구독 직후/
+  // 프로세스 잠듦으로 stale/None)은 no-use 로 귀속한다("모르면 사용으로 감점하지 않는다").
   const posture = latestPitchSample;
   const postureFresh =
     posture !== null && Number.isFinite(posture.atMs) && nowMs - posture.atMs <= POSTURE_SAMPLE_STALE_MS;
-  const postureUse = classifyPostureInterval(
-    postureUsageState,
-    {
-      pitchDeg: postureFresh ? posture.pitchDeg : 0,
-      // 신선한 자세 샘플이 없으면 walking=false 로 넘겨 지속을 끊고 no-use 로 만든다.
-      walking: walking && postureFresh,
-      nowMs,
-    },
-    elapsedMinutes
-  );
-  postureUsageState = postureUse.next;
+  const continuity = latestPostureContinuity;
+  const continuityFresh =
+    continuity !== null &&
+    Number.isFinite(continuity.atMs) &&
+    nowMs - continuity.atMs <= POSTURE_SAMPLE_STALE_MS;
+  // 걷는 중이고 자이로 샘플/지속 추적이 모두 신선하며 현재 isUse 이면 이 구간을 사용으로 귀속.
+  const postureIsUse = walking && postureFresh && continuityFresh && continuity.isUse;
 
-  // 확정 인앱 터치 OR-in: 걷는 중 최근 인앱 상호작용이 있었으면 그 구간도 use 로 인정한다.
   const minutes = Number.isFinite(elapsedMinutes) && elapsedMinutes > 0 ? elapsedMinutes : 0;
+  // 확정 인앱 터치 OR-in: 걷는 중 최근 인앱 상호작용이 있었으면 그 구간도 use 로 인정한다.
   const touchUse = walking && hadRecentInteraction(nowMs);
-  const useMinutes = touchUse ? minutes : postureUse.useMinutes;
+  const useMinutes = touchUse || postureIsUse ? minutes : 0;
   const noUseMinutes = minutes - useMinutes;
 
   const sample: WalkContextSample = {
@@ -478,5 +535,7 @@ export function resetSessionTaskState(): void {
   motionState = createInitialMotionState();
   lastCriticalScoreAlertAt = null;
   latestPitchSample = null;
-  postureUsageState = createInitialPostureUsageState();
+  postureContinuityState = createInitialPostureContinuityState();
+  latestPostureContinuity = null;
+  latestWalking = null;
 }
