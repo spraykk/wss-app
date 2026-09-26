@@ -75,13 +75,15 @@ usageRatio = totalUseMinutes / totalWalkMinutes   // 걸은 시간 기준(정지
 totalWalkMinutes = Σ segment.walkMinutes          // WSSResult.totalWalkMinutes(선택 필드)로도 노출
 scaledDeduction = DEDUCTION_SCALE(=4) × totalDeduction
 rawScore = clamp(100 - scaledDeduction, 0, 100)
-penalty(usageRatio) = usageRatio<0.3 ? 0 : 40 × (usageRatio-0.3) × (walk<3분?0.5:1)
-displayScore = usageRatio>=0.3 ? clamp(100 - scaledDeduction - 4×penalty) : rawScore
+displayScore = rawScore   // usageRatio 누진 penalty 제거 -> displayScore === rawScore
 belowCriticalThreshold = rawScore < 60
 ```
-- **감점의 소스가 자세 기반 감지 사용 시간으로 바뀌었다**(7절): 이제 `useMinutes`는 "걷는 중 pitch>=10도가 3초 이상 지속"으로 감지된 use 시간이다. 다만 **공식의 구조, `DEDUCTION_SCALE`(k=4), 임계점 60, usageRatio 페널티(임계 0.3 / 강도 40 / walk<3분 시 x0.5 등 xk)는 그대로다(변경 없음).** 바뀐 것은 "무엇을 use 로 셀 것인가"뿐이고 그 use 시간을 점수로 환산하는 규칙은 동일하다.
+- **[설계자 결정] usageRatio 누진 penalty 를 점수식에서 제거했다.** 예전에는 `usageRatio>=0.3` 이면 `penalty(usageRatio)=40×(usageRatio-0.3)×(walk<3분?0.5:1)` 을 추가로 `×k` 감점했다. 그런데 조금만 사용해도 usageRatio 가 30% 를 넘기 쉬워(애초에 30% 초과가 어렵지 않음) 점수가 너무 빨리 감소하는 문제가 있어 채점 곡선에서 이 항을 뺐다. 그 결과 **`displayScore` 는 이제 `rawScore` 와 동일**하며, 감점은 "사용 시간 × 가중치"(scaledDeduction) 기반만 남는다.
+- **`usageRatio` 는 계속 계산/반환한다** - 단, 채점이 아니라 리포트·홈의 "휴대폰 보며 걸은 비율 %" 표시용으로만 쓴다.
+- 예전 파라미터 `USAGE_RATIO_PENALTY_THRESHOLD=0.3`, `PENALTY_SEVERITY=40` 은 **더 이상 채점에 쓰지 않으며 `src/wss/weights.ts` 에서 제거**했다(정의 자체를 삭제).
+- **감점의 소스는 자세 기반 감지 사용 시간이다**(7절): `useMinutes`는 "걷는 중 pitch>=10도가 3초 이상 지속"으로 감지된 use 시간이다. **공식의 구조와 `DEDUCTION_SCALE`(k=4), 임계점 60, 각 가중치는 그대로 동결(변경 없음)** 이고, 이번에 바뀐 것은 usageRatio penalty 항을 제거한 것뿐이다.
 - `DEDUCTION_SCALE = 4` (k=4): 실증 가중치만으로는 점수가 90~98에 몰려 변별력이 없어, 감점을 4배 증폭. 시뮬레이션에서 평균~71, 하위10%~52, 로지스틱 변곡점~58 → **임계점을 60으로 확정**(개발자 결정).
-- **k=4, 임계점 60, usageRatio 페널티 파라미터(0.3 / 40)는 확정값 - 변경 금지.**
+- **k=4, 임계점 60, 각 가중치는 확정값 - 변경 금지(동결).**
 
 ### 3.4 등급 (`src/wss/grade.ts`)
 - 위험(60 미만) / 주의(60~평균) / 양호(평균~Q3) / 우수(Q3 이상) / 측정중(표본 5명 미만·미집계).
@@ -100,7 +102,7 @@ belowCriticalThreshold = rawScore < 60
   - **정직한 한계(OS 보장 아님)**: 연속 위치 업데이트는 세션 동안 프로세스 생존 가능성을 크게 높이는 수단이지 절대 보장이 아니다. iOS는 배터리/메모리 압박 등 극단 상황에서 프로세스를 언제든 종료할 수 있고, 사용자가 앱을 **스와이프로 강제 종료하면 멈춘다(정상)**. 프로세스가 잠들거나 종료되어 자세 샘플이 끊긴 구간은 staleness 판정으로 **no-use로 귀속**되어 감점이 뻥튀기되지 않는다.
 - **저전력 전략**: 상시 고정밀 GPS 대신 연속 업데이트는 Balanced 정확도로만 유지하고, 위험구역 정밀 추적(BestForNavigation)은 지오펜스(근접 위험구역 최대 18개 + boundary 1개, iOS 20 region 하드캡 대응) 진입 시에만 상향(escalate), 이탈 시 하향(de-escalate)한다.
 - **차량 오인 방지** (`src/sensors/motionClassifier.ts`): GPS 속도로 walking/vehicle/idle 분류. 15km/h 이상이면 vehicle 모드+60초 쿨다운. 차량 구간은 세그먼트로 안 쌓음. Pedometer 걸음 증가를 보조 신호로 사용.
-- **정지(idle)/차량(vehicle)은 감점하지 않는다 - 오직 확정 보행 중 사용만 감점(핵심 결함 수정)**: 예전 백그라운드 파이프라인은 "차량만 아니면 전부 보행"으로 취급했다(옛 `shouldSkipAsVehicle` 가 `vehicle` 일 때만 스킵하고, `idle`/`walking` 은 모두 `walking=true` 로 흘려보냄). 그래서 **가만히 서서(idle, 속도≈0) 폰을 켜놓기만 해도** pitch>=10 3초 지속이 '사용'으로 잡혀 감점되고, 정지 시간이 use 로 누적되며 usageRatio 페널티까지 겹쳐 **점수가 빠르게 떨어지는** 증상(사용자 보고: '정지해서 켜놓기만 했는데 점수가 계속 떨어짐', '대중교통 이용 시 감점')이 났다. 이제 `src/sensors/motionClassifier.ts#decideLocationWalking`(순수)이 `classifyMotion` 의 walking/idle/vehicle 를 그대로 얻어 각 경로가 무엇을 할지 결정하고, `backgroundTask.ts` 의 두 경로(연속 위치 태스크 핸들러 + 지오펜스 콜백)가 그 결과로 `processLocationSample` 을 호출한다.
+- **정지(idle)/차량(vehicle)은 감점하지 않는다 - 오직 확정 보행 중 사용만 감점(핵심 결함 수정)**: 예전 백그라운드 파이프라인은 "차량만 아니면 전부 보행"으로 취급했다(옛 `shouldSkipAsVehicle` 가 `vehicle` 일 때만 스킵하고, `idle`/`walking` 은 모두 `walking=true` 로 흘려보냄). 그래서 **가만히 서서(idle, 속도≈0) 폰을 켜놓기만 해도** pitch>=10 3초 지속이 '사용'으로 잡혀 감점되고, 정지 시간이 use 로 누적되며(당시엔 usageRatio 누진 penalty 도 겹쳤다 - 3.3절대로 이후 제거됨) **점수가 빠르게 떨어지는** 증상(사용자 보고: '정지해서 켜놓기만 했는데 점수가 계속 떨어짐', '대중교통 이용 시 감점')이 났다. 이제 `src/sensors/motionClassifier.ts#decideLocationWalking`(순수)이 `classifyMotion` 의 walking/idle/vehicle 를 그대로 얻어 각 경로가 무엇을 할지 결정하고, `backgroundTask.ts` 의 두 경로(연속 위치 태스크 핸들러 + 지오펜스 콜백)가 그 결과로 `processLocationSample` 을 호출한다.
   - **vehicle(차량)**: 기존처럼 세그먼트 미누적 스킵(감점 안 함).
   - **idle(정지/신호대기)**: 스킵하지 않고 `walking=false` 로 넘긴다. 위치/위험구역/밀집 알림 로직은 계속 동작하되, 그 구간 경과분은 **no-use 로 귀속**되어 사용 감점이 0 이다(정지·대중교통 정차 순간은 감점하지 않는다).
   - **walking(확정 보행)**: `walking=true`. 오직 이때만 자세 기반 사용 감점 후보가 된다.
@@ -157,6 +159,10 @@ belowCriticalThreshold = rawScore < 60
 16. **주간 일별 막대그래프**: `WSSResult.dateISO`(선택 필드) 추가, 최근 7일 막대그래프. 순수 집계 `src/wss/weekly.ts#computeWeeklyDaily` + verify-weekly.
 17. **하루 대표 점수 = 보행 시간 가중평균**: 하루에 여러 보행이 있으면 그날 대표값을 "마지막 보행 점수"가 아니라 **보행 시간 가중평균**(`Σ score×walkTime / Σ walkTime`)으로 낸다. 가중치는 각 보행의 `WSSResult.totalWalkMinutes`(= Σ segment.walkMinutes = 확정 보행 시간). **하위호환 규칙**: `totalWalkMinutes`(가중치)가 없거나 <=0 인 항목만 있는 날은 유한 점수의 **균등가중(단순 평균) 폴백**으로 대표를 정한다(과거 이력이 빈 막대로 가려지지 않게). 오래 걸은 보행일수록 그날 대표에 더 크게 반영된다(짧게 잠깐 걸은 보행이 하루를 통째로 대표하던 왜곡 제거). `WeeklyEntry.totalWalkMinutes`(선택) 필드 이름을 `WSSResult.totalWalkMinutes` 와 일치시켜, `app/report.tsx` 가 저장 이력(`WSSResult[]`)을 별도 매핑 없이 그대로 `computeWeeklyDaily` 에 넘겨도 가중치가 바로 연결되게 했다. `weekly.ts`/verify-weekly(가중평균 vs 마지막값/단순평균 차이 + 실제 `WSSResult` 배선을 검증).
 18. **리포트 이력에 총 보행 시간 표기**: `WSSResult.totalWalkMinutes`(선택 필드)를 리포트 이력 각 행에 '보행 N분 M초'로 표시한다(`app/report.tsx#formatWalkMinutes`, 순수 분/초 포맷). 필드가 없던 과거 이력 행은 정직하게 '-' 로 표시한다. 주간 카드 캡션/빈 상태 문구도 "보행 시간 가중평균" 기준으로 갱신했다.
+19. **가중평균 end-to-end 재검증 + '오늘의 총점' 카드**: "가중평균이 전혀 안 되는 것 같다"는 보고를 받아 stop 저장 -> 직렬화 왕복 -> report -> weekly 경로를 처음부터 끝까지 다시 확인했다. `useWalkSession.stop` 이 `computeWSS` 결과에 `dateISO` 를 찍어 `saveResult` 로 저장하고, `loadHistory` 가 그 `WSSResult[]`(선택 필드 `totalWalkMinutes` 포함)를 읽어 `app/report.tsx` 가 매핑 없이 그대로 `computeWeeklyDaily` 에 넘긴다. 이 경로가 실제로 가중치를 연결하는지 `scripts/verify-weekly.ts` 에 **JSON 직렬화 왕복(`JSON.parse(JSON.stringify(...))`) 실배선 케이스**를 추가해, 왕복 후에도 가중평균이 단순평균·마지막값과 구분되는지 mutation-sensitive 로 확인했다(전부 PASS). 리포트에는 순수 헬퍼 `src/wss/weekly.ts#computeTodayScore`(= computeWeeklyDaily 의 오늘=마지막 슬롯)를 통해 **"오늘의 총점(보행 시간 가중평균)" 카드**를 최상단에 명확히 표기한다.
+    - **가중평균이 '티가 안 나는' 흔한 이유(정직성)**: (1) **하루에 보행이 1회뿐이면** 가중평균은 그 보행 점수와 같다(가중이 안 된 것처럼 보이지만 정상). (2) `totalWalkMinutes` 가 저장되지 않은 **과거 이력 행만 있는 날**은 가중치를 알 수 없어 그날 **단순 평균으로 폴백**한다(computeWeeklyDaily 하위호환 규칙). 즉 옛 이력만 있는 날은 가중평균이 아니라 단순 평균이다.
+    - **온디바이스 검증 항목(개발자 실기기)**: 하루에 **서로 다른 점수 · 서로 다른 보행 시간**으로 **2회 이상** 걸어, 그날 막대와 '오늘의 총점'이 단순 평균이나 마지막 값이 아니라 **보행 시간 가중평균**과 일치하는지 확인한다(예: 짧게 걸어 낮은 점수 + 길게 걸어 높은 점수면 총점이 높은 점수 쪽으로 당겨져야 함).
+20. **홈 화면 상태 중심 개편 + 종료 시 100점 버그 해소**: 홈이 진행 중 상시 점수 카드를 표시하던 구조를 없애고 **상태 중심(측정 시작 / 측정 중 / 보행 종료)** 으로 바꿨다. 예전에는 `computeWSS(segments)` 로 계산한 displayScore 를 상단 대형 카드에 상시 렌더했는데, '보행 종료' 시 세션이 비워지면 `computeWSS([])` 가 100 을 돌려줘 **종료 직후 100점이 잘못 뜨는 버그**가 있었다. 이제 홈은 (1) 대기: 시작 유도, (2) 측정 중: '측정 중' 상태만 표시(점수 미표시), (3) 종료: `useWalkSession.stop()` 이 반환한 **방금 그 세션의 최종 결과**로만 **'이번 보행의 점수는 X점입니다'** 를 안내한다. 배선: `stop()` 이 이제 방금 종료한 `WSSResult` 를 반환하고(세그먼트 0이면 `null`), 세그먼트 0으로 종료하면 100점 대신 '측정된 보행이 없어요' 안내를 띄운다. **온디바이스 검증**: 보행 종료 직후 홈에 100 이 아니라 방금 보행의 실제 점수(또는 보행 없음 안내)가 뜨는지 확인.
 
 > **개발자 측 남은 조작**: 최신 `supabase/schema.sql`을 Supabase SQL Editor에서 재실행(연령대 컬럼/RPC 반영, idempotent), 그리고 최신 코드로 새 preview 빌드해서 실기기 설치·검증.
 
@@ -196,7 +202,7 @@ walkMinutes: elapsedMinutes,
 - **unknownUse / measurementInsufficient(측정 불충분)는 제거됨**: 이제 모든 초(second)가 자세 기준으로 use 또는 no-use 로 이분되므로 "모름" 밴드가 존재하지 않는다. `usageClassification.ts`의 `UsageBand` 타입과 세그먼트의 `estimatedUseMinutes`/`unknownUseMinutes` 필드는 **옛 이력·리포트와의 타입 호환을 위해서만 남겨 두고 항상 0**이다(더 이상 기록하지 않음). 리포트의 '측정 불충분' 안내와 그 판정 임계도 제거됐다.
 - **인앱 터치(confirmedUse) 소스와의 관계**: 사용 판정의 최종 소스는 자세다. 인앱 상호작용 추적(`interactionTracker.ts`)은 유지되지만 사용 시간을 지배하지 않는다(자세 감지가 이를 대체한다).
 
-**리포트 대표 문구**: 감지된 use 비율(usageRatio)을 사용자가 바로 이해하도록, 리포트(`app/report.tsx`)와 홈(`app/index.tsx`)이 **'이번 보행 중 OO%를 휴대폰 보며 걸었어요'** 형태로 눈에 띄게 표시한다. 백분율 규칙은 순수 유도 함수 `src/wss/useRatio.ts`(`useRatioPercent`/`formatUseRatioPercent`)로 단일화해 홈·리포트가 동일하게 계산한다.
+**리포트 대표 문구**: 감지된 use 비율(usageRatio)을 사용자가 바로 이해하도록, 리포트(`app/report.tsx`)가 **'이번 보행 중 OO%를 휴대폰 보며 걸었어요'** 형태로 눈에 띄게 표시한다. 백분율 규칙은 순수 유도 함수 `src/wss/useRatio.ts`(`useRatioPercent`/`formatUseRatioPercent`)로 단일화한다. (홈은 이제 상태 중심 UI 로 개편되어 진행 중 실시간 비율 칩을 표시하지 않는다 - 9절/아래 홈 화면 항목 참조.)
 
 ### 7.1a iOS 백그라운드 센서 연속성 (코드로 보장되지 않음 · 온디바이스 검증 항목)
 - 실제 "다른 앱을 보며 걷기"까지 잡으려면 우리 앱이 백그라운드일 때도 모션(pitch)을 읽어야 한다. 앱 프로세스는 `UIBackgroundModes:location`으로 살아 있을 수 있으나, **iOS는 백그라운드 모션 연속성을 보장하지 않으며 시스템 판단에 따라 앱이 종료될 수 있다.** 즉 백그라운드에서 pitch 샘플이 계속 들어온다는 보장을 **코드가 제공하지 않는다.**
@@ -296,7 +302,7 @@ src/storage/
   deviceId.ts       익명 기기 UUID
 app/
   _layout.tsx       라우트 가드(온보딩 유도)
-  index.tsx         홈(보행 시작/종료)
+  index.tsx         홈(상태 중심: 측정 시작/측정 중/보행 종료. 상시 점수 미표시. 종료 시 stop() 반환 결과로 '이번 보행의 점수는 X점입니다' 안내)
   map.tsx           위험 지도(뷰포트 필터·반경 스케일 적용)
   report.tsx        리포트(점수·비교·주간 막대그래프·그룹통계)
   feedback.tsx      의견 보내기
@@ -315,7 +321,7 @@ assets/accident-zones.json   전국 사고다발지 12,780건(원본, 수정 금
 
 ## 10. 검증 스크립트 목록(24종)
 verify-agegroup-stats, verify-api-key, verify-audio-ear-mapping, verify-dedup, verify-feedback, verify-geofence-selection, verify-grade, verify-grid, verify-interaction-tracker, verify-location-walking, verify-motion-classifier, verify-overlap-geometry, verify-overlap-render, verify-posture-math, verify-posture-usage, verify-segment-key, verify-session-reducer, verify-supabase-stats, verify-usage-classification, verify-usage-wss, verify-use-ratio, verify-weekly, verify-wss-example, verify-zone-cluster.
-> 참고: verify-weekly(보행 시간 가중평균 계약)와 verify-usage-wss(WSSResult.totalWalkMinutes = Σ walkMinutes)는 이번 변경에서 갱신됐고, 새 스크립트는 추가하지 않았다.
+> 참고: 이번 변경에서 다음 3종이 갱신됐고 새 스크립트는 추가하지 않았다(개수 24종 유지). verify-usage-wss(usageRatio 누진 penalty 제거 반영), verify-wss-example(penalty 제거로 displayScore===rawScore 회귀 확인), verify-weekly(JSON 직렬화 왕복 실배선 케이스로 가중평균이 단순평균·마지막값과 구분되는지 mutation-sensitive 검증 + computeTodayScore).
 실행: `env -u NODE_OPTIONS node --experimental-strip-types scripts/verify-<name>.ts`
 
 ---

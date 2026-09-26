@@ -18,7 +18,7 @@
 // 않는다(타입 정합만 보장). 세그먼트 누적 규칙은 순수 리듀서(reduceSession)로 검증한다.
 import { useCallback, useEffect, useRef, useState } from 'react';
 import * as Location from 'expo-location';
-import type { WalkSegment } from '../types';
+import type { WalkSegment, WSSResult } from '../types';
 import { computeWSS } from '../wss/engine';
 import { loadAccidentZones } from '../data/accidentZones';
 import {
@@ -71,7 +71,10 @@ export interface UseWalkSession {
   segments: WalkSegment[];
   isTracking: boolean;
   start: () => Promise<void>;
-  stop: () => Promise<void>;
+  // stop 은 방금 종료한 보행의 최종 결과(WSSResult)를 반환한다. 세그먼트가 0이면
+  // 저장/표시할 결과가 없으므로 null 을 반환한다. 홈 화면이 이 값으로 '이번 보행의
+  // 점수는 X점입니다'를 안내한다(진행 중 실시간 점수 미표시).
+  stop: () => Promise<WSSResult | null>;
 }
 
 export function useWalkSession(): UseWalkSession {
@@ -164,7 +167,7 @@ export function useWalkSession(): UseWalkSession {
     }
   }, []);
 
-  const stop = useCallback(async (): Promise<void> => {
+  const stop = useCallback(async (): Promise<WSSResult | null> => {
     // 지오펜스/정밀 추적 해제.
     await stopGeofencing();
     // 핵심 결함 수정: 세션 동안 켜둔 연속 위치 업데이트를 반드시 중지한다(배터리/프라이버시).
@@ -179,6 +182,9 @@ export function useWalkSession(): UseWalkSession {
     void dismissTrackingNotification().catch(() => {});
 
     // 최종 세션을 읽어 WSS 결과를 history 에 저장(로컬 저장은 항상 우선이므로 await).
+    // FEAT-002: 방금 종료한 보행 결과를 호출부(홈)로 반환하기 위해 바깥 변수에 담는다.
+    // 세그먼트가 0이면 결과가 없으므로 null 을 유지한다.
+    let finishedResult: WSSResult | null = null;
     const finalSession = await loadActiveSession();
     if (finalSession.segments.length > 0) {
       const computed = computeWSS(finalSession.segments);
@@ -190,6 +196,7 @@ export function useWalkSession(): UseWalkSession {
       // 점수의 보행 시간 가중평균(weekly.ts) 가중치와 (2) 리포트 이력의 총 보행 시간 표기에
       // 쓰인다. 별도 대입이 필요 없으며(스프레드로 충분), 업로드 payload 에는 추가하지 않는다.
       const result = { ...computed, dateISO };
+      finishedResult = result;
       await saveResult(result);
 
       // 익명 통계 서버로 최소 데이터만 업로드한다: displayScore(0~100), 날짜, 익명 deviceId.
@@ -218,6 +225,9 @@ export function useWalkSession(): UseWalkSession {
     await clearActiveSession();
     const cleared = emptyActiveSession();
     if (isMountedRef.current) setSession(cleared);
+
+    // 방금 종료한 보행 결과를 반환한다(세그먼트 0이면 null). 홈이 이 값으로 점수를 안내한다.
+    return finishedResult;
   }, []);
 
   return {

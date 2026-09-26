@@ -150,3 +150,25 @@ export function computeWeeklyDaily(
 
   return days;
 }
+
+/**
+ * 오늘(todayISO)의 대표 점수 하나만 뽑는다. computeWeeklyDaily 가 오늘을 마지막(index 6)
+ * 슬롯으로 반환하므로 그 값을 그대로 돌려주는 순수 편의 헬퍼다. 오늘 완료한(유한 점수) 보행이
+ * 없으면 null 을 돌려준다(리포트 '오늘의 총점' 카드가 정직한 빈 상태 문구를 띄우도록).
+ *
+ * [가중평균이 안 보이는 흔한 이유 - 정직성]
+ *   1) 하루에 보행을 1회만 하면 가중평균 = 그 보행 점수라서, 값이 그 보행 점수와 같아 '가중이
+ *      안 된 것처럼' 보인다(정상 동작). 서로 다른 점수·다른 보행시간으로 2회 이상 걸어야 티가 난다.
+ *   2) totalWalkMinutes 가 없던 과거 이력 행은 가중치를 알 수 없어 그 날 단순 평균으로 폴백한다
+ *      (computeWeeklyDaily 규칙 (c)). 즉 옛 이력만 있는 날은 가중평균이 아니라 단순 평균이다.
+ */
+export function computeTodayScore(
+  history: readonly WeeklyEntry[],
+  todayISO: string
+): number | null {
+  const week = computeWeeklyDaily(history, todayISO);
+  // computeWeeklyDaily 는 항상 길이 7(과거->오늘)로, 오늘은 마지막 슬롯이다. 방어적으로 확인.
+  const todaySlot = week[week.length - 1];
+  if (todaySlot === undefined || todaySlot.dateISO !== todayISO) return null;
+  return todaySlot.score;
+}

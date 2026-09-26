@@ -9,7 +9,7 @@ import type { WssStats } from '../src/data/supabase';
 import { getAgeBand, AGE_BAND_OPTIONS } from '../src/storage/ageBand';
 import type { AgeBand } from '../src/storage/ageBand';
 import type { WSSResult } from '../src/types';
-import { computeWeeklyDaily } from '../src/wss/weekly';
+import { computeWeeklyDaily, computeTodayScore } from '../src/wss/weekly';
 import type { WeeklyDay } from '../src/wss/weekly';
 import { palette, spacing, radius, font, shadow } from '../src/theme';
 import { classifyGrade } from '../src/wss/grade';
@@ -140,8 +140,12 @@ export default function ReportScreen() {
       : null;
 
   // 최근 7일 일별 대표 점수(순수 함수). 로컬 오늘 기준으로 집계한다.
-  const weekly: WeeklyDay[] = computeWeeklyDaily(history, toDateISO(new Date()));
+  const todayISO = toDateISO(new Date());
+  const weekly: WeeklyDay[] = computeWeeklyDaily(history, todayISO);
   const weeklyHasAny = weekly.some((d) => d.score !== null);
+  // 오늘의 대표 점수(= 오늘 완료한 보행들의 보행 시간 가중평균). computeWeeklyDaily 의 마지막
+  // 슬롯을 그대로 쓰는 순수 헬퍼. 오늘 완료 보행이 없으면 null.
+  const todayScore = computeTodayScore(history, todayISO);
 
   // 등급 분류(순수 함수). displayScore 기준으로 절대기준(60 미만=위험) 우선 판정하고,
   // 표본이 5명 미만/미집계면 'insufficient'(측정 중)로 정직하게 폴백한다.
@@ -161,6 +165,28 @@ export default function ReportScreen() {
 
   return (
     <ScrollView style={styles.screen} contentContainerStyle={styles.container}>
+      {/* FEAT-003: 오늘의 총점(보행 시간 가중평균) 카드. 하루 여러 보행을 보행 시간으로 가중평균한
+          '오늘의 대표 점수'를 명확히 표기한다. 값 출처는 computeTodayScore(=주간 마지막 슬롯). */}
+      <View style={styles.todayCard}>
+        <Text style={styles.todayTitle}>오늘의 총점(보행 시간 가중평균)</Text>
+        {todayScore !== null ? (
+          <>
+            <Text style={styles.todayScore}>{Math.round(todayScore)}점</Text>
+            <Text style={styles.todayNote}>
+              오늘 여러 번 걸었다면 보행 시간이 긴 보행일수록 크게 반영돼요.
+            </Text>
+            {/* 정직성 문구: 가중평균이 '티가 안 나는' 두 가지 흔한 이유를 사용자 눈높이로 밝힌다. */}
+            <Text style={styles.todayHonesty}>
+              오늘 보행이 1회뿐이면 가중평균은 그 보행 점수와 같아요(달라 보이지 않는 게
+              정상이에요). 또, 예전에 기록된 보행 중 보행 시간이 저장되지 않은 항목은 그날
+              단순 평균으로 반영돼요.
+            </Text>
+          </>
+        ) : (
+          <Text style={styles.todayEmpty}>오늘은 아직 완료한 보행이 없어요.</Text>
+        )}
+      </View>
+
       {latest && feedback && grade ? (
         <View style={[styles.feedbackCard, { backgroundColor: feedback.bg }]}>
           <Text style={[styles.feedbackTitle, { color: feedback.text }]}>
@@ -416,6 +442,19 @@ const styles = StyleSheet.create({
     ...shadow.card,
   },
   title: { fontSize: font.label, fontWeight: '800', color: palette.text },
+  // FEAT-003: 오늘의 총점(가중평균) 카드. 리포트 최상단에 배치해 대표 점수를 크게 보여준다.
+  todayCard: {
+    padding: spacing.lg,
+    borderRadius: radius.md,
+    backgroundColor: palette.sky,
+    gap: spacing.xs,
+    ...shadow.card,
+  },
+  todayTitle: { fontSize: font.label, fontWeight: '800', color: palette.skyDeep },
+  todayScore: { fontSize: font.score, lineHeight: font.score + 8, fontWeight: '800', color: palette.skyDeep },
+  todayNote: { fontSize: font.body, color: palette.text, fontWeight: '600', lineHeight: 22 },
+  todayHonesty: { fontSize: font.caption, color: palette.textMuted, lineHeight: 18, marginTop: spacing.xs },
+  todayEmpty: { fontSize: font.body, color: palette.textMuted, fontWeight: '600', paddingVertical: spacing.sm },
   // FEAT-004: 사용 비율(%)을 카드의 최상위 대표 요소로. 점수보다 크고 직관적으로.
   useRatioHero: {
     alignItems: 'center',

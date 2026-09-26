@@ -59,17 +59,17 @@ export const TIME_WEIGHT: Record<TimeBand, number> = {
 // open(개방)=1.0 유지.
 export const EAR_WEIGHT = { occluded: 1.3, open: 1.0 } as const;
 
-// 스마트폰 사용 감점 파라미터(변경 금지).
-export const USAGE_RATIO_PENALTY_THRESHOLD = 0.3;
-export const PENALTY_SEVERITY = 40;
+// [설계자 결정] usageRatio 누진 penalty 를 점수에서 제거했다. 이전에 쓰이던 파라미터
+// (USAGE_RATIO_PENALTY_THRESHOLD=0.3, PENALTY_SEVERITY=40)는 조금만 사용해도 30% 초과가
+// 쉬워 점수가 너무 빨리 감소하던 문제를 유발해 채점에서 제거했고, 더 이상 정의하지 않는다.
+// 감점은 "사용 시간 × 가중치" 기반만 남긴다.
 
 // [스케일 배율] 감점 스케일 배율. 가중치 "비율"(EAR/WEATHER/TIME/LOCATION/OVERLAP)은
 // 그대로 두고, computeWSS 의 "전체 감점"에만 이 배율을 곱해 점수 분포를 넓힌다.
 // 근거: 현재 실증 가중치로는 WSS 가 90~98 에 몰려 변별력이 없다. 감점을 k=4 로 증폭한
 // 시뮬레이션에서 평균~71, 중앙~74, 하위10%~52, 로지스틱 변곡점(임계점)~58 이 나왔고,
 // 사용자가 임계점을 60 으로 확정했다. 인위적 시뮬레이션 기반 추정치이며 실제 사고
-// 발생을 예측하지 않는다. penalty(P(x)) 에도 스케일 일관성을 위해 동일 배율을 곱한다
-// (파라미터 0.3/40 값 자체는 유지, 결과에만 ×k).
+// 발생을 예측하지 않는다.
 export const DEDUCTION_SCALE = 4;
 
 // WSS 참고 기준선(보고서 상수). 참조처가 많아 타입 유지.

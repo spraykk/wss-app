@@ -5,7 +5,8 @@
 //  (a) confirmedUseMinutes(감지된 사용)가 있으면 그 값으로 감점(smartphoneUseMinutes 가 달라도 이긴다).
 //  (b) 레거시 세그먼트(confirmed 없음, smartphoneUseMinutes 만) -> 예전 rawScore 를 그대로 재현(하위호환).
 //  (c) confirmed=0(전 구간 no-use) -> 감점 없음(rawScore=100), usageRatio=0.
-//  (d) usageRatio 는 use/walk 로 계산되고, >=0.3 이면 penalty 경로를 탄다.
+//  (d) usageRatio 는 표시용으로만 use/walk 로 계산되고, 점수 감점에는 penalty 를 쓰지 않는다
+//      (설계자 결정으로 usageRatio 누진 penalty 제거 -> displayScore === rawScore).
 //  (e) WSSResult 는 더 이상 measurementInsufficient/unknownRatio 를 기록하지 않는다(undefined).
 //  (f) usageBands 는 use(confirmedUse)/no-use 만 채우고 estimated/unknown 은 0.
 //
@@ -102,16 +103,18 @@ function baseSegment(overrides: Record<string, unknown>) {
   assert('(c) unknownRatio undefined', res.unknownRatio === undefined);
 }
 
-// (d) usageRatio>=0.3 -> penalty 경로. use=9, walk=10.
+// (d) usageRatio>=0.3 여도 penalty 는 없다(설계자 결정으로 제거). use=9, walk=10.
 {
   const seg = baseSegment({ confirmedUseMinutes: 9, noUseMinutes: 1, walkMinutes: 10, smartphoneUseMinutes: 9 });
   const combined = computeSegmentWeight(seg).combined;
   const res = computeWSS([seg]);
   assertClose('(d) usageRatio = 9/10', res.usageRatio, 9 / 10);
-  // usageRatio(0.9) >= 0.3 이므로 displayScore 는 penalty 경로를 타고 rawScore 이하여야 한다.
+  // usageRatio(0.9) >= 0.3 이지만 penalty 를 쓰지 않으므로 displayScore === rawScore.
   const raw = 100 - DEDUCTION_SCALE * combined * 9;
   assertClose('(d) rawScore uses use=9', res.rawScore, Math.max(0, Math.min(100, raw)));
-  assert('(d) displayScore <= rawScore (penalty applied)', res.displayScore <= res.rawScore, `disp=${res.displayScore} raw=${res.rawScore}`);
+  assert('(d) displayScore === rawScore (usageRatio penalty 제거됨)', res.displayScore === res.rawScore, `disp=${res.displayScore} raw=${res.rawScore}`);
+  // mutation 민감: displayScore 는 정확히 100 - k*combined*use 여야 한다(penalty 가 되살아나면 이 값이 작아져 FAIL).
+  assertClose('(d) displayScore == 100 - k*combined*use (no penalty)', res.displayScore, Math.max(0, Math.min(100, 100 - DEDUCTION_SCALE * combined * 9)));
   // totalWalkMinutes = 세그먼트 walkMinutes 합(=10).
   assert('(d) totalWalkMinutes = sum of walkMinutes (10)', res.totalWalkMinutes === 10, `${res.totalWalkMinutes}`);
 }

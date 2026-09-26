@@ -6,7 +6,7 @@
 import { register } from 'node:module';
 register('./ts-transpile-hook.mjs', import.meta.url);
 
-const { computeWeeklyDaily } = await import('../src/wss/weekly.ts');
+const { computeWeeklyDaily, computeTodayScore } = await import('../src/wss/weekly.ts');
 
 let failures = 0;
 function assert(label: string, cond: boolean): void {
@@ -87,6 +87,78 @@ assertClose(
   36
 );
 assert('실배선 가중평균이 단순 평균(60) 이 아님', wssShaped[6].score !== 60);
+
+// (핵심/실배선 + JSON 왕복 가드) stop() 저장 -> loadHistory 는 JSON.stringify/JSON.parse 왕복이다.
+// 저장 행은 완전한 WSSResult 형태(rawScore/usageRatio/enteredHighRiskZoneWhileUsingPhone/
+// belowCriticalThreshold/segmentBreakdown/usageBands 등 초과 필드 포함)이며, totalWalkMinutes 가
+// 가중치다. 이 케이스는 그 행들을 JSON.parse(JSON.stringify(...)) 로 실제 저장-복원 왕복시킨 뒤
+// computeWeeklyDaily 에 넣어, 왕복 후에도 필드명 정합(totalWalkMinutes)과 가중치가 살아있어
+// 가중평균이 (단순 평균/마지막값과) 구분되는지 검증한다. 리더가 walkMinutes 로 되돌아가는 회귀면
+// 가중치가 전부 0 이 되어 단순 평균 60 으로 폴백하므로 아래 36 단언이 FAIL 한다(뮤테이션 민감).
+const fullWssRows = [
+  {
+    dateISO: '2026-03-15',
+    displayScore: 90,
+    rawScore: 90,
+    usageRatio: 0.05,
+    totalWalkMinutes: 1,
+    enteredHighRiskZoneWhileUsingPhone: false,
+    belowCriticalThreshold: false,
+    segmentBreakdown: [
+      { regionId: 'r1', weight: { wLocation: 1, wWeather: 1, wTime: 1, wEar: 1, combined: 1 }, contribution: 2.5 },
+    ],
+    usageBands: { confirmedUseMinutes: 0.05, estimatedUseMinutes: 0, unknownUseMinutes: 0, noUseMinutes: 0.95 },
+  },
+  {
+    dateISO: '2026-03-15',
+    displayScore: 30,
+    rawScore: 30,
+    usageRatio: 0.6,
+    totalWalkMinutes: 9,
+    enteredHighRiskZoneWhileUsingPhone: true,
+    belowCriticalThreshold: true,
+    segmentBreakdown: [
+      { regionId: 'r2', weight: { wLocation: 1, wWeather: 1, wTime: 1, wEar: 1, combined: 1 }, contribution: 17.5 },
+    ],
+    usageBands: { confirmedUseMinutes: 5.4, estimatedUseMinutes: 0, unknownUseMinutes: 0, noUseMinutes: 3.6 },
+  },
+];
+// 실제 저장/복원 왕복: JSON.stringify -> JSON.parse (loadHistory/saveResult 와 동일한 직렬화).
+const roundTripped = JSON.parse(JSON.stringify(fullWssRows));
+const roundTripWeekly = computeWeeklyDaily(roundTripped, TODAY);
+// (90*1 + 30*9)/10 = 36. 왕복 후에도 totalWalkMinutes 가 보존되어 가중평균이 36 이어야 한다.
+assertClose(
+  'JSON 왕복 후 완전한 WSSResult 형태 -> 가중평균 36 (totalWalkMinutes 보존, walkMinutes 회귀면 60 폴백)',
+  roundTripWeekly[6].score,
+  36
+);
+assert('JSON 왕복 가중평균이 마지막값(90) 이 아님', roundTripWeekly[6].score !== 90);
+assert('JSON 왕복 가중평균이 단순 평균(60) 이 아님', roundTripWeekly[6].score !== 60);
+// 왕복이 totalWalkMinutes 를 실제로 보존했는지 직접 확인(직렬화가 필드를 떨구지 않았는지).
+assert(
+  'JSON 왕복이 totalWalkMinutes 를 보존함',
+  roundTripped[0].totalWalkMinutes === 1 && roundTripped[1].totalWalkMinutes === 9
+);
+
+// (오늘 대표 점수 헬퍼) computeTodayScore 는 computeWeeklyDaily 의 오늘(마지막) 슬롯을 그대로 돌려준다.
+// 위 왕복 행들의 오늘 대표 = 가중평균 36 이어야 하며, weekly[6] 과 정확히 일치해야 한다.
+assertClose('computeTodayScore -> JSON 왕복 오늘 대표 = 36', computeTodayScore(roundTripped, TODAY), 36);
+assert(
+  'computeTodayScore == weekly 마지막 슬롯(오늘)',
+  computeTodayScore(roundTripped, TODAY) === roundTripWeekly[6].score
+);
+// 오늘 완료 보행이 없으면 null(리포트 빈 상태 문구용).
+assert('computeTodayScore -> 오늘 보행 없음이면 null', computeTodayScore([], TODAY) === null);
+// 오늘이 아닌 과거 날짜만 있으면 오늘 대표는 null.
+assert(
+  'computeTodayScore -> 과거 날짜만 있으면 오늘은 null',
+  computeTodayScore([{ dateISO: '2026-03-14', displayScore: 80, totalWalkMinutes: 3 }], TODAY) === null
+);
+// 잘못된 todayISO 면 마지막 슬롯 날짜가 오늘과 달라 null 을 돌려준다(방어적 계약).
+assert(
+  'computeTodayScore -> 잘못된 todayISO 는 null',
+  computeTodayScore([{ dateISO: '2026-03-15', displayScore: 80, totalWalkMinutes: 3 }], 'not-a-date') === null
+);
 
 // (i) 단일 보행 -> 그 보행 점수 자체가 대표.
 const single = computeWeeklyDaily(

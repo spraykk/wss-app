@@ -1,5 +1,5 @@
 import { WalkSegment, WeightBreakdown, WSSResult } from '../types';
-import { computeLocationWeight, DEDUCTION_SCALE, EAR_WEIGHT, PENALTY_SEVERITY, TIME_WEIGHT, USAGE_RATIO_PENALTY_THRESHOLD, WEATHER_WEIGHT, WSS_CRITICAL } from './weights';
+import { computeLocationWeight, DEDUCTION_SCALE, EAR_WEIGHT, TIME_WEIGHT, WEATHER_WEIGHT, WSS_CRITICAL } from './weights';
 import { usageBandsFromSegments } from '../session/usageClassification';
 
 // 세그먼트의 "감지된 사용 시간"(분)을 구한다(FEAT-003: 자세 기반).
@@ -19,11 +19,6 @@ export function computeSegmentWeight(segment: WalkSegment): WeightBreakdown {
   const combined = wLocation * wWeather * wTime * wEar;
   return { wLocation, wWeather, wTime, wEar, combined };
 }
-function penalty(usageRatio: number, totalWalkMinutes: number): number {
-  if (usageRatio < USAGE_RATIO_PENALTY_THRESHOLD) return 0;
-  const shortWalkDamping = totalWalkMinutes < 3 ? 0.5 : 1;
-  return PENALTY_SEVERITY * (usageRatio - USAGE_RATIO_PENALTY_THRESHOLD) * shortWalkDamping;
-}
 export function computeWSS(segments: WalkSegment[]): WSSResult {
   // 감점/사용비율은 "확인된 사용 시간"으로 구동한다(Option A - Step 1).
   // (레거시 세그먼트는 confirmedUseMinutesOf 가 smartphoneUseMinutes 로 폴백 -> 예전 동작 유지.)
@@ -37,10 +32,15 @@ export function computeWSS(segments: WalkSegment[]): WSSResult {
   const totalConfirmedMinutes = segments.reduce((sum, s) => sum + confirmedUseMinutesOf(s), 0);
   const usageRatio = totalWalkMinutes > 0 ? totalConfirmedMinutes / totalWalkMinutes : 0;
   // 감점 스케일 배율(DEDUCTION_SCALE=k): 가중치 비율은 유지하고 전체 감점만 ×k 로 증폭한다.
-  // penalty(P(x)) 도 스케일 일관성을 위해 ×k 를 적용한다(파라미터 0.3/40 은 불변, 결과에만).
   const scaledDeduction = DEDUCTION_SCALE * totalDeduction;
   const rawScore = clampScore(100 - scaledDeduction);
-  const displayScore = usageRatio >= USAGE_RATIO_PENALTY_THRESHOLD ? clampScore(100 - scaledDeduction - DEDUCTION_SCALE * penalty(usageRatio, totalWalkMinutes)) : rawScore;
+  // [설계자 결정] usageRatio 누진 penalty 를 감점 곡선에서 제거했다.
+  // 근거: 조금만 사용해도 usageRatio 가 30% 를 넘기 쉬워(애초에 30% 초과가 어렵지 않음)
+  // 점수가 너무 빨리 감소하던 문제를 완화하기 위함이다. 감점은 이제 "사용 시간 × 가중치"
+  // 기반(scaledDeduction)만 남긴다. 그 결과 displayScore 는 rawScore 와 동일하다.
+  // usageRatio 자체는 리포트·홈의 '휴대폰 보며 걸은 비율 %' 표시용으로 계속 계산/반환한다.
+  // rawScore(회귀·통계용)의 기존 의미는 그대로 유지한다(하위호환).
+  const displayScore = rawScore;
   // 위험지역에서 "감지된" 사용이 있었는지(riskIntensity>0 && use>0)로 트리거한다.
   const enteredHighRiskZoneWhileUsingPhone = segments.some((s) => s.riskIntensity > 0 && confirmedUseMinutesOf(s) > 0);
   // 사용/미사용 집계(리포트 표시용). 자세 기반 이분화 이후 use(confirmedUse)/no-use 만 채운다.

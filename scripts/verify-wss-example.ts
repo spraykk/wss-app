@@ -57,7 +57,13 @@ assertClose('reference combined weight', computeSegmentWeight(referenceSegment).
 // 4) 위 세그먼트를 1분 사용 -> rawScore = 100 - DEDUCTION_SCALE(k=4) × combined
 //    (가중치 비율은 유지, 전체 감점만 ×k 로 증폭)
 assertClose('DEDUCTION_SCALE === 4', DEDUCTION_SCALE, 4);
-assertClose('computeWSS rawScore (k×combined 감점)', computeWSS([referenceSegment]).rawScore, 100 - DEDUCTION_SCALE * expectedCombined);
+const referenceResult = computeWSS([referenceSegment]);
+assertClose('computeWSS rawScore (k×combined 감점)', referenceResult.rawScore, 100 - DEDUCTION_SCALE * expectedCombined);
+// 4b) usageRatio penalty 제거 회귀 방지: displayScore === rawScore === 100 - k×combined.
+//     (penalty 가 되살아나면 usageRatio>=0.3 세그먼트에서 이 등식이 깨진다. 여기 referenceSegment 는
+//      usageRatio<0.3 이지만, penalty-free 계약을 명시적으로 고정해 회귀를 잡는다.)
+assertClose('computeWSS displayScore === rawScore (penalty 제거)', referenceResult.displayScore, referenceResult.rawScore);
+assertClose('computeWSS displayScore === 100 - k×combined', referenceResult.displayScore, 100 - DEDUCTION_SCALE * expectedCombined);
 
 // 5) 임계점 WSS_CRITICAL 은 60(80.605 -> 60, 시뮬레이션 변곡점 ~58 을 60 으로 확정).
 assertClose('WSS_CRITICAL === 60', WSS_CRITICAL, 60);
