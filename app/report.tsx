@@ -16,6 +16,7 @@ import { classifyGrade } from '../src/wss/grade';
 import type { WssGrade } from '../src/wss/grade';
 import { WSS_CRITICAL } from '../src/wss/weights';
 import { useRatioPercent } from '../src/wss/useRatio';
+import { formatRelativeTime, formatRelativeDateISO } from '../src/wss/relativeTime';
 
 // 로컬 오늘 날짜를 yyyy-mm-dd 로 만든다(useWalkSession.toDateISO 와 동일 규칙).
 // node:* 없이 순수 Date 산술만 사용한다.
@@ -141,6 +142,8 @@ export default function ReportScreen() {
 
   // 최근 7일 일별 대표 점수(순수 함수). 로컬 오늘 기준으로 집계한다.
   const todayISO = toDateISO(new Date());
+  // FEAT-003: 이력 행의 상대 시간('N분 전' 등) 계산 기준 시각. map 밖에서 한 번만 잡는다.
+  const nowMs = Date.now();
   const weekly: WeeklyDay[] = computeWeeklyDaily(history, todayISO);
   const weeklyHasAny = weekly.some((d) => d.score !== null);
   // 오늘의 대표 점수(= 오늘 완료한 보행들의 보행 시간 가중평균). computeWeeklyDaily 의 마지막
@@ -344,15 +347,28 @@ export default function ReportScreen() {
         {history.length === 0 ? (
           <Text style={styles.muted}>완료한 보행이 여기에 쌓여요.</Text>
         ) : (
-          history.map((h, i) => (
-            <View key={i} style={styles.historyRow}>
-              <Text style={styles.historyScore}>{Math.round(h.displayScore)}점</Text>
-              {/* 총 보행 시간(확정 보행 시간의 합). totalWalkMinutes 가 없던 과거 이력 행은
-                  formatWalkMinutes 가 '-' 를 돌려준다(정직성: 없는 값을 지어내지 않음). */}
-              <Text style={styles.muted}>보행 {formatWalkMinutes(h.totalWalkMinutes)}</Text>
-              <Text style={styles.muted}>raw {h.rawScore.toFixed(1)}</Text>
-            </View>
-          ))
+          history.map((h, i) => {
+            // FEAT-003: 상대 시간 라벨. recordedAt(정밀 기록 시각)이 있으면 그걸 쓰고,
+            // 없던 과거 이력 행은 dateISO 날짜 전용 폴백('오늘'이면 '방금'/그 외 'N일 전'),
+            // 둘 다 없으면 '-'(정직성: 없는 값을 지어내지 않음).
+            const relativeLabel =
+              typeof h.recordedAt === 'number' && Number.isFinite(h.recordedAt)
+                ? formatRelativeTime(h.recordedAt, nowMs)
+                : typeof h.dateISO === 'string' && h.dateISO.length > 0
+                  ? formatRelativeDateISO(h.dateISO, nowMs)
+                  : '-';
+            return (
+              <View key={i} style={styles.historyRow}>
+                <Text style={styles.historyScore}>{Math.round(h.displayScore)}점</Text>
+                {/* 상대 시간('3분 전' 등)과 총 보행 시간('보행 2분 10초')을 함께 보여준다. */}
+                <Text style={styles.muted}>{relativeLabel}</Text>
+                {/* 총 보행 시간(확정 보행 시간의 합). totalWalkMinutes 가 없던 과거 이력 행은
+                    formatWalkMinutes 가 '-' 를 돌려준다(정직성: 없는 값을 지어내지 않음). */}
+                <Text style={styles.muted}>보행 {formatWalkMinutes(h.totalWalkMinutes)}</Text>
+                <Text style={styles.muted}>raw {h.rawScore.toFixed(1)}</Text>
+              </View>
+            );
+          })
         )}
       </View>
 

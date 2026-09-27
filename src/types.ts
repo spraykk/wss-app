@@ -86,6 +86,11 @@ export interface WSSResult {
    * 선택 필드(옵셔널)로 두어 이 필드가 없던 과거 이력 행과 하위호환된다(없으면 집계에서 제외).
    * 기존 필드는 무엇도 제거/개명하지 않는다(engine.ts/report.tsx/검증스크립트 의존). */
   dateISO?: string;
+  /** 로컬 기록 시각(ms epoch). 저장 시점(stop)에 Date.now()로 찍는다. 리포트 이력의
+   * 상대 시간 표기('방금'/'N분 전'/'N시간 전'/'N일 전') 전용이며 서버로 업로드하지 않는다
+   * (업로드 payload 는 { deviceId, displayScore, dateISO, ageBand } 로 불변). 선택 필드라
+   * 이 필드가 없던 과거 이력 행과 하위호환된다(없으면 dateISO 날짜 전용 폴백 또는 '-'). */
+  recordedAt?: number;
 }
 
 export interface AccidentZone {

@@ -190,12 +190,17 @@ export function useWalkSession(): UseWalkSession {
       const computed = computeWSS(finalSession.segments);
       // 보행이 끝난 로컬 날짜를 결과에 도장 찍는다(업로드 date_iso 와 동일 값).
       // 주간 일별 막대그래프가 이 날짜로 하루별 대표 점수를 집계한다.
-      const dateISO = toDateISO(new Date());
+      // 같은 Date 인스턴스로 dateISO 와 recordedAt 을 함께 뽑아 둘이 일관되게 한다.
+      const now = new Date();
+      const dateISO = toDateISO(now);
+      // FEAT-003: 리포트 이력의 상대 시간 표기('N분 전' 등) 전용 로컬 기록 시각(ms epoch).
+      // 로컬 표시용일 뿐이며 아래 uploadScore payload 에는 의도적으로 포함하지 않는다.
+      const recordedAt = now.getTime();
       // computed 스프레드가 computeWSS(FEAT-002)의 totalWalkMinutes(확정 보행 시간 합)까지
       // 그대로 result 에 실어 saveResult 로 history 에 저장한다. 이 값이 (1) 주간 일별 대표
       // 점수의 보행 시간 가중평균(weekly.ts) 가중치와 (2) 리포트 이력의 총 보행 시간 표기에
       // 쓰인다. 별도 대입이 필요 없으며(스프레드로 충분), 업로드 payload 에는 추가하지 않는다.
-      const result = { ...computed, dateISO };
+      const result = { ...computed, dateISO, recordedAt };
       finishedResult = result;
       await saveResult(result);
 
