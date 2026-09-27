@@ -18,6 +18,9 @@ import { WSS_CRITICAL } from '../src/wss/weights';
 import { useRatioPercent } from '../src/wss/useRatio';
 import { formatRelativeTime, formatRelativeDateISO } from '../src/wss/relativeTime';
 
+// react-native 전역. dev 빌드에서 true, 프로덕션 빌드에서 false.
+declare const __DEV__: boolean;
+
 // 로컬 오늘 날짜를 yyyy-mm-dd 로 만든다(useWalkSession.toDateISO 와 동일 규칙).
 // node:* 없이 순수 Date 산술만 사용한다.
 function toDateISO(date: Date): string {
@@ -220,24 +223,11 @@ export default function ReportScreen() {
             <Text style={styles.scoreSecondaryValue}>{Math.round(latest.displayScore)}점</Text>
           </View>
           <View style={styles.metricRow}>
-            <Text style={styles.metricLabel}>원점수(rawScore)</Text>
-            <Text style={styles.metricValue}>{latest.rawScore.toFixed(2)}</Text>
-          </View>
-          <View style={styles.metricRow}>
             <Text style={styles.metricLabel}>고위험 zone 사용 중 진입</Text>
             <Text style={styles.metricValue}>
               {latest.enteredHighRiskZoneWhileUsingPhone ? '예' : '아니오'}
             </Text>
           </View>
-          <Text style={styles.subtitle}>세그먼트 분해</Text>
-          {latest.segmentBreakdown.map((s, i) => (
-            <View key={`${s.regionId}-${i}`} style={styles.segmentRow}>
-              <Text style={styles.segmentId}>{s.regionId}</Text>
-              <Text style={styles.segmentMeta}>
-                가중치 {s.weight.combined.toFixed(3)} · 기여 {s.contribution.toFixed(2)}
-              </Text>
-            </View>
-          ))}
         </View>
       ) : (
         <View style={styles.card}>
@@ -365,7 +355,6 @@ export default function ReportScreen() {
                 {/* 총 보행 시간(확정 보행 시간의 합). totalWalkMinutes 가 없던 과거 이력 행은
                     formatWalkMinutes 가 '-' 를 돌려준다(정직성: 없는 값을 지어내지 않음). */}
                 <Text style={styles.muted}>보행 {formatWalkMinutes(h.totalWalkMinutes)}</Text>
-                <Text style={styles.muted}>raw {h.rawScore.toFixed(1)}</Text>
               </View>
             );
           })
@@ -376,11 +365,13 @@ export default function ReportScreen() {
         <Text style={styles.feedbackLink}>💬 의견 보내기</Text>
       </Link>
 
-      {/* 방식1(Step 2 준비): 자세 측정 도구로 가는 접근 링크.
-          개발/측정용 도구이며 아직 WSS 점수에 반영되지 않음을 문구로 명시한다. */}
-      <Link href="/posture-lab" asChild>
-        <Text style={styles.postureLabLink}>🧪 자세 측정 도구 (개발/측정용, 점수 미반영)</Text>
-      </Link>
+      {/* FEAT-004: 자세 측정 도구로 가는 접근 링크. 개발/측정용 도구이므로
+          개발 빌드(__DEV__)에서만 노출하고 프로덕션(앱스토어) 빌드에서는 숨긴다. */}
+      {__DEV__ ? (
+        <Link href="/posture-lab" asChild>
+          <Text style={styles.postureLabLink}>🧪 자세 측정 도구 (개발/측정용, 점수 미반영)</Text>
+        </Link>
+      ) : null}
 
       <View style={styles.disclaimerBox}>
         <Text style={styles.disclaimer}>
@@ -491,14 +482,6 @@ const styles = StyleSheet.create({
   metricLabel: { fontSize: font.body, color: palette.textMuted },
   metricValue: { fontSize: font.body, color: palette.text, fontWeight: '700' },
   subtitle: { fontSize: font.label, fontWeight: '800', color: palette.text, marginTop: spacing.sm },
-  segmentRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    paddingVertical: spacing.xs,
-  },
-  segmentId: { fontSize: font.body, color: palette.text, fontWeight: '600' },
-  segmentMeta: { fontSize: font.small, color: palette.textMuted },
   empty: { fontSize: font.label, color: palette.textMuted, textAlign: 'center', paddingVertical: spacing.lg },
   historyRow: {
     flexDirection: 'row',
