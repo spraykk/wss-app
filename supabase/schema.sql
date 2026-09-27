@@ -86,13 +86,19 @@ create policy "anon can update own score"
 -- ----------------------------------------------------------------------------
 -- 3) 통계 RPC
 -- ----------------------------------------------------------------------------
--- 전체 사용자 점수의 표본수/평균/Q3(75 백분위)를 집계해 반환한다.
+-- 최근 7일 이동창(오늘 포함 7일) 사용자 점수의 표본수/평균/Q3(75 백분위)를 집계해 반환한다.
+-- 창 정의: date_iso >= current_date - interval '6 days' (오늘 + 직전 6일).
+--   초기 사용자 수가 적을 때 전체 누적 통계가 하루에도 크게 흔들리므로, 최근 7일로 좁혀
+--   통계값을 안정화한다. 반환 컬럼/계산은 그대로라 create or replace 로 idempotent 하다.
 -- security definer: 함수 소유자 권한으로 실행되어 RLS 를 우회해 집계할 수 있다.
 --   (원시 행은 못 읽어도 집계된 통계는 얻게 하는 표준 패턴.) 개별 행은 반환하지 않는다.
 -- 반환:
---   sample_count : 집계에 사용된 행 수(표본 부족 판단용; 앱에서 <5 면 정직하게 표시).
+--   sample_count : 최근 7일 집계에 사용된 행 수(표본 부족 판단용; count(*) 를 그대로 반환).
 --   mean_score   : 평균(표본 없으면 null).
 --   q3_score     : 75 백분위(percentile_cont; 표본 없으면 null).
+-- 정직성 원칙: 서버에서 표본을 숨기지 않는다. <5 표본 게이팅은 클라이언트 책임
+--   (MIN_STATS_SAMPLE=5)이라 count(*) 를 있는 그대로 내보낸다.
+-- 적용 방법: 이 파일을 Supabase SQL Editor 에서 다시 실행해야 반영된다(재실행해도 안전/idempotent).
 create or replace function public.get_wss_stats()
 returns table (
   sample_count bigint,
@@ -108,17 +114,23 @@ as $$
     count(*)::bigint as sample_count,
     avg(display_score) as mean_score,
     percentile_cont(0.75) within group (order by display_score) as q3_score
-  from public.wss_scores;
+  from public.wss_scores
+  -- 최근 7일 이동창(오늘 포함 7일). date_iso 는 date 컬럼이라 비교가 정확하다.
+  where date_iso >= current_date - interval '6 days';
 $$;
 
 -- 익명 역할이 통계 RPC 를 실행할 수 있게 허용한다(원시 테이블 접근 없이 집계만).
 grant execute on function public.get_wss_stats() to anon;
 
 -- 특정 연령대 밴드로 필터링한 그룹 통계. get_wss_stats() 와 동일한 모양을 반환하되
--- age_band = p_age_band 인 행만 집계한다. 전체 통계용 get_wss_stats() 는 그대로 둔다
--- (fetchStats() 가 그 zero-arg 시그니처에 의존한다).
--- 정직성 원칙 유지: 원시 표본수(sample_count)를 그대로 반환하고, <5 판단은 클라이언트가 한다
--- (서버에서 표본을 숨기지 않는다). 표본이 없으면 count=0, mean/q3=null.
+-- age_band = p_age_band 이고 최근 7일 이동창(오늘 포함 7일) 안에 든 행만 집계한다.
+-- 창 정의: date_iso >= current_date - interval '6 days' (오늘 + 직전 6일).
+-- 전체 통계용 get_wss_stats() 는 그대로 둔다(fetchStats() 가 그 zero-arg 시그니처에 의존한다).
+-- 반환 컬럼/계산은 그대로라 create or replace 로 idempotent 하다.
+-- 정직성 원칙 유지: 원시 표본수(sample_count = count(*))를 그대로 반환하고, <5 판단은
+-- 클라이언트가 한다(MIN_STATS_SAMPLE=5). 서버에서 표본을 숨기지 않는다. 표본이 없으면
+-- count=0, mean/q3=null.
+-- 적용 방법: 이 파일을 Supabase SQL Editor 에서 다시 실행해야 반영된다(재실행해도 안전/idempotent).
 create or replace function public.get_wss_stats_by_age(p_age_band text)
 returns table (
   sample_count bigint,
@@ -134,7 +146,9 @@ as $$
     avg(display_score) as mean_score,
     percentile_cont(0.75) within group (order by display_score) as q3_score
   from public.wss_scores
-  where age_band = p_age_band;
+  -- age_band 필터에 최근 7일 이동창(오늘 포함 7일)을 AND 로 결합한다.
+  where age_band = p_age_band
+    and date_iso >= current_date - interval '6 days';
 $$;
 
 -- 익명 역할이 밴드별 통계 RPC 를 실행할 수 있게 허용한다(집계만).
