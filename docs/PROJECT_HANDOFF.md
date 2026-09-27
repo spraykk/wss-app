@@ -38,7 +38,7 @@
 
 ### 개발/검증 환경의 제약 (AI 작업 시 필수 인지)
 - **AI 샌드박스는 외부망 차단(INTEGRATIONS_ONLY)** + npm 레지스트리 접근 불가. 따라서 **RN 앱을 실제로 빌드/실행할 수 없고**, 새 npm 패키지도 설치 불가.
-- 대신 **순수 로직을 `scripts/verify-*.ts` 검증 스크립트**로 검증한다. 실행: `env -u NODE_OPTIONS node --experimental-strip-types scripts/verify-<name>.ts`. 현재 **24종** 존재, 전부 통과 유지가 필수 조건.
+- 대신 **순수 로직을 `scripts/verify-*.ts` 검증 스크립트**로 검증한다. 실행: `env -u NODE_OPTIONS node --experimental-strip-types scripts/verify-<name>.ts`. 현재 **25종** 존재, 전부 통과 유지가 필수 조건.
 - 그래서 규칙: `src/` 안에서는 node 표준 라이브러리(fs/path/url 등) import 금지(RN 런타임에 없음). JSON은 Metro `require`로만 로드. 순수 함수는 배열/값 주입식으로 설계해 node로 검증 가능하게 한다.
 - 실제 앱 동작 검증은 **개발자가 실기기에서 수동으로** 한다(AI는 못 함).
 
@@ -131,6 +131,7 @@ belowCriticalThreshold = rawScore < 60
 - **테이블 `feedback`**: id, device_id, category(bug/suggestion/praise/etc), rating(1~5 null허용), message(≤2000자), app_version, age_band(신규), created_at.
 - **RLS**: anon은 insert/upsert만 가능. 원시 행 select 불가(다른 사용자 데이터 열람 차단).
 - **RPC(집계만 노출)**: `get_wss_stats()`(전체 count/mean/q3), `get_wss_stats_by_age(band)`(신규, 연령대별), `list_feedback()`(device_id는 익명 anon_ref로만), `get_feedback_summary()`, `get_feedback_summary_by_age()`(신규). 전부 security definer + search_path 고정.
+- **통계 집계 창 = 최근 7일 이동창(오늘 포함 7일)**: `get_wss_stats()`/`get_wss_stats_by_age(p_age_band)`는 이제 전체 기간(all-time)이 아니라 `where date_iso >= current_date - interval '6 days'`로 **오늘 + 직전 6일**만 집계한다. 이용자 수가 적을 때 하루치만으로 통계값이 하루 종일 요동치던 문제를 완화한다(사용자 지적). **RPC 시그니처/반환 컬럼은 그대로**여서 앱 클라이언트(`src/data/supabase.ts`의 `fetchStats`/`fetchStatsByAge`)는 변경 없이 동작한다. `count(*)`도 그대로 반환하며, 표본 5명 미만 정직 게이팅은 여전히 클라이언트 측(`MIN_STATS_SAMPLE=5`, "측정 중" 폴백)에서만 판정한다.
 - **연령대 밴드**: `'10s'|'20s'|'30s'|'40s'|'50plus'` + 미선택(null/'미상'). 기존 행은 age_band=null 허용(하위호환).
 - **웹 대시보드** `docs/feedback.html`: 로컬 HTML 파일. Supabase anon 키로 list_feedback/summary RPC 호출해 피드백을 (전체+연령대별) 표시. 서버 배포 불필요, 브라우저로 열면 됨(증빙/자소서용).
 
@@ -164,7 +165,13 @@ belowCriticalThreshold = rawScore < 60
     - **온디바이스 검증 항목(개발자 실기기)**: 하루에 **서로 다른 점수 · 서로 다른 보행 시간**으로 **2회 이상** 걸어, 그날 막대와 '오늘의 총점'이 단순 평균이나 마지막 값이 아니라 **보행 시간 가중평균**과 일치하는지 확인한다(예: 짧게 걸어 낮은 점수 + 길게 걸어 높은 점수면 총점이 높은 점수 쪽으로 당겨져야 함).
 20. **홈 화면 상태 중심 개편 + 종료 시 100점 버그 해소**: 홈이 진행 중 상시 점수 카드를 표시하던 구조를 없애고 **상태 중심(측정 시작 / 측정 중 / 보행 종료)** 으로 바꿨다. 예전에는 `computeWSS(segments)` 로 계산한 displayScore 를 상단 대형 카드에 상시 렌더했는데, '보행 종료' 시 세션이 비워지면 `computeWSS([])` 가 100 을 돌려줘 **종료 직후 100점이 잘못 뜨는 버그**가 있었다. 이제 홈은 (1) 대기: 시작 유도, (2) 측정 중: '측정 중' 상태만 표시(점수 미표시), (3) 종료: `useWalkSession.stop()` 이 반환한 **방금 그 세션의 최종 결과**로만 **'이번 보행의 점수는 X점입니다'** 를 안내한다. 배선: `stop()` 이 이제 방금 종료한 `WSSResult` 를 반환하고(세그먼트 0이면 `null`), 세그먼트 0으로 종료하면 100점 대신 '측정된 보행이 없어요' 안내를 띄운다. **온디바이스 검증**: 보행 종료 직후 홈에 100 이 아니라 방금 보행의 실제 점수(또는 보행 없음 안내)가 뜨는지 확인.
 
-> **개발자 측 남은 조작**: 최신 `supabase/schema.sql`을 Supabase SQL Editor에서 재실행(연령대 컬럼/RPC 반영, idempotent), 그리고 최신 코드로 새 preview 빌드해서 실기기 설치·검증.
+21. **앱스토어 출시 준비(release-prep) - 4건**:
+    - **① 서버 통계 최근 7일 이동창**: `get_wss_stats()`/`get_wss_stats_by_age(p_age_band)`가 all-time 대신 `date_iso >= current_date - interval '6 days'`(오늘 포함 7일)로 집계하도록 `supabase/schema.sql`을 변경했다. 이용자 수가 적을 때 하루치만으로 평균·Q3가 하루 종일 흔들리던 문제를 완화한다. RPC 시그니처/반환 컬럼 불변이라 앱 클라이언트(`fetchStats`/`fetchStatsByAge`)는 변경 없음. 표본<5 정직 게이팅은 계속 클라이언트(`MIN_STATS_SAMPLE=5`). **개발자는 최신 `supabase/schema.sql`을 Supabase SQL Editor에서 다시 실행해야 반영된다(idempotent, 재실행 안전).**
+    - **② 보행 이력에 상대 시간 표시**: 리포트 이력 행이 각 기록의 경과 시간을 '방금'/'N분 전'/'N시간 전'/'N일 전'으로 보여준다. 순수 모듈 `src/wss/relativeTime.ts#formatRelativeTime(fromMs, nowMs)`(레거시 행용 일 단위 폴백 `formatRelativeDateISO` 포함)로 유도한다. 이는 새 **선택·로컬 전용** 필드 `WSSResult.recordedAt`(ms epoch, `useWalkSession.stop`에서 기록)에 기반하며 **서버로 전송하지 않는다**(업로드 페이로드는 deviceId/displayScore/dateISO/ageBand로 불변). `recordedAt`이 없는 과거 행은 날짜 기반 상대 라벨 또는 '-'로 정직 폴백한다. 기존 총 보행 시간('보행 N초', `formatWalkMinutes`)은 상대 시간과 함께 계속 표시한다.
+    - **③ 개발자 도구 `__DEV__` 게이팅**: 진단 패널 진입 링크(`app/index.tsx`)와 자세 측정 도구 진입 링크(`app/report.tsx`)를 RN 전역 `__DEV__`가 true일 때만 렌더하도록 감쌌다. 프로덕션 빌드에서는 숨겨진다. 화면 파일(`app/diagnostics.tsx`, `app/posture-lab.tsx`)과 `app/_layout.tsx`의 `Stack.Screen` 라우트 등록은 개발용으로 그대로 유지한다.
+    - **④ 리포트 화면에서 rawScore/개발자용 raw 상세 제거(표시 전용)**: 리포트(`app/report.tsx`)에서 '원점수(rawScore)' 행, 각 이력 행의 'raw N.N', '세그먼트 분해' 표기를 제거했다. **표시 전용 변경**이며 `WSSResult.rawScore`, `belowCriticalThreshold`(rawScore < 60), `computeWSS`/engine/grade 로직은 불변이다.
+
+> **개발자 측 남은 조작**: 최신 `supabase/schema.sql`을 Supabase SQL Editor에서 재실행(연령대 컬럼/RPC + 통계 7일 이동창 반영, idempotent), 그리고 최신 코드로 새 preview 빌드해서 실기기 설치·검증.
 
 ---
 
@@ -243,7 +250,7 @@ walkMinutes: elapsedMinutes,
 ## 8. 앞으로 해야 할 일 (백로그)
 
 ### 즉시(개발자 조작 대기)
-- [ ] Supabase SQL Editor에서 최신 `schema.sql` 재실행(연령대 컬럼/RPC).
+- [ ] Supabase SQL Editor에서 최신 `schema.sql` 재실행(연령대 컬럼/RPC + 통계 최근 7일 이동창 필터). idempotent, 재실행 안전.
 - [ ] 최신 코드로 새 preview 빌드 → 실기기 설치 → 검증(빨간원 절반/온보딩 루프 해소/막대그래프/의견전송/연령대).
 
 ### 기능 (이 문서의 주 검토 대상)
@@ -255,6 +262,8 @@ walkMinutes: elapsedMinutes,
   - [ ] iOS 백그라운드 모션 연속성은 코드로 보장되지 않음 → **온디바이스 검증 항목**(7.1a). 센서 공백=no-use 로 방어.
 
 ### 출시 마무리
+- [x] **개발자 도구 프로덕션 숨김**: 진단 패널·자세 측정 도구 진입 링크를 `__DEV__` 게이팅(프로덕션 빌드에서 숨김). 화면/라우트는 개발용으로 유지(6절 21-③).
+- [x] **리포트에서 rawScore/개발자용 raw 상세 제거**: '원점수' 행·raw N.N·세그먼트 분해 표시 제거(표시 전용, 로직 불변)(6절 21-④).
 - [ ] 앱 아이콘 PNG 확정(현재 SVG. 하늘색 파스텔 배경+흰 발자국 시안 있으나 PNG 변환 보류 상태).
 - [ ] production 빌드 + App Store Connect 등록 + 심사 제출.
 - [ ] 실전 테스트(실제로 걸으며 점수·업로드·알림·차량제외 동작 확인).
@@ -274,6 +283,7 @@ src/wss/
   context.ts        시간대(TimeBand) 판정
   weekly.ts         [신규] 주간 일별 대표점수 집계
   useRatio.ts       [신규] usageRatio(감지 사용/총 보행)→백분율 유도(홈·리포트 공용 문구)
+  relativeTime.ts   [순수][신규] 경과 시간→'방금/N분 전/N시간 전/N일 전' 라벨(formatRelativeTime). 레거시 행용 일 단위 폴백 formatRelativeDateISO
 src/data/
   accidentZones.ts  사고데이터 로드·dedup(공간격자)·ZONE_RADIUS_SCALE(0.3)·겹침/포함 판정
   zoneCluster.ts    [순수][신규] 현재 위치의 겹침 클러스터(연결 요소) 크기로 밀집 판정(computeDenseClusterAt/shouldNotifyDenseCluster, DENSE_ZONE_COUNT_THRESHOLD=3). 처음 진입 시 한 번만 알림 제어용. 위치 미전송
@@ -302,9 +312,9 @@ src/storage/
   deviceId.ts       익명 기기 UUID
 app/
   _layout.tsx       라우트 가드(온보딩 유도)
-  index.tsx         홈(상태 중심: 측정 시작/측정 중/보행 종료. 상시 점수 미표시. 종료 시 stop() 반환 결과로 '이번 보행의 점수는 X점입니다' 안내)
+  index.tsx         홈(상태 중심: 측정 시작/측정 중/보행 종료. 상시 점수 미표시. 종료 시 stop() 반환 결과로 '이번 보행의 점수는 X점입니다' 안내. 진단 패널 진입 링크는 __DEV__ 게이팅=프로덕션 숨김)
   map.tsx           위험 지도(뷰포트 필터·반경 스케일 적용)
-  report.tsx        리포트(점수·비교·주간 막대그래프·그룹통계)
+  report.tsx        리포트(점수·비교·주간 막대그래프·그룹통계·이력 상대 시간 표시. rawScore/원점수 행·raw N.N·세그먼트 분해는 표시 제거, 자세 측정 도구 링크는 __DEV__ 게이팅)
   feedback.tsx      의견 보내기
   posture-lab.tsx   자세 측정/기록 도구(pitch/roll 실시간+구간요약, 실측 데이터 수집용)
   diagnostics.tsx   [신규] 실시간 진단 패널(개발/진단용). readPostureDiagnostics 로 pitch/자이로 신선도/3초 지속/isUse/walking/마지막 위치 이벤트 경과/세션 누적을 1초 폴링 표시만 함. 서버 전송 없음, 점수 로직 불변
@@ -315,13 +325,13 @@ modules/audio-environment/   커스텀 네이티브 오디오 모듈(Swift)
 supabase/schema.sql          DB 스키마(테이블·RLS·RPC)
 docs/feedback.html           피드백 웹 대시보드(로컬 HTML)
 docs/privacy-policy.md/.html 개인정보 처리방침
-scripts/verify-*.ts          순수 로직 검증(24종, 전부 통과 필수)
+scripts/verify-*.ts          순수 로직 검증(25종, 전부 통과 필수)
 assets/accident-zones.json   전국 사고다발지 12,780건(원본, 수정 금지)
 ```
 
-## 10. 검증 스크립트 목록(24종)
-verify-agegroup-stats, verify-api-key, verify-audio-ear-mapping, verify-dedup, verify-feedback, verify-geofence-selection, verify-grade, verify-grid, verify-interaction-tracker, verify-location-walking, verify-motion-classifier, verify-overlap-geometry, verify-overlap-render, verify-posture-math, verify-posture-usage, verify-segment-key, verify-session-reducer, verify-supabase-stats, verify-usage-classification, verify-usage-wss, verify-use-ratio, verify-weekly, verify-wss-example, verify-zone-cluster.
-> 참고: 이번 변경에서 다음 3종이 갱신됐고 새 스크립트는 추가하지 않았다(개수 24종 유지). verify-usage-wss(usageRatio 누진 penalty 제거 반영), verify-wss-example(penalty 제거로 displayScore===rawScore 회귀 확인), verify-weekly(JSON 직렬화 왕복 실배선 케이스로 가중평균이 단순평균·마지막값과 구분되는지 mutation-sensitive 검증 + computeTodayScore).
+## 10. 검증 스크립트 목록(25종)
+verify-agegroup-stats, verify-api-key, verify-audio-ear-mapping, verify-dedup, verify-feedback, verify-geofence-selection, verify-grade, verify-grid, verify-interaction-tracker, verify-location-walking, verify-motion-classifier, verify-overlap-geometry, verify-overlap-render, verify-posture-math, verify-posture-usage, verify-relative-time, verify-segment-key, verify-session-reducer, verify-supabase-stats, verify-usage-classification, verify-usage-wss, verify-use-ratio, verify-weekly, verify-wss-example, verify-zone-cluster.
+> 참고: 이번 release-prep 변경에서 새 스크립트 `verify-relative-time`(상대 시간 라벨 '방금/N분 전/N시간 전/N일 전' 경계와 레거시 폴백을 mutation-sensitive 로 검증)을 추가해 개수가 24종→25종이 됐다. 서버 통계 7일 이동창 변경은 `supabase/schema.sql`의 SQL 필터 변경이라 별도 verify 스크립트가 없다(개발자가 SQL Editor 재실행으로 반영). 앞선 변경에서 갱신된 스크립트: verify-usage-wss(usageRatio 누진 penalty 제거 반영), verify-wss-example(penalty 제거로 displayScore===rawScore 회귀 확인), verify-weekly(JSON 직렬화 왕복 실배선 케이스로 가중평균이 단순평균·마지막값과 구분되는지 mutation-sensitive 검증 + computeTodayScore).
 실행: `env -u NODE_OPTIONS node --experimental-strip-types scripts/verify-<name>.ts`
 
 ---
