@@ -65,6 +65,12 @@ export function nearestUltraSrtNcstBase(now: Date = new Date()): NcstBase {
 
 // KMA 초단기실황 카테고리(PTY: 강수형태) -> 앱 WeatherCondition 매핑.
 // PTY: 0 없음, 1 비, 2 비/눈, 3 눈, 4 소나기, 5 빗방울, 6 빗방울눈날림, 7 눈날림
+//
+// 안개('fog') 자동감지 한계: KMA 초단기실황(getUltraSrtNcst)은 PTY/SKY 만 제공하고
+// 시정(visibility)/안개 전용 카테고리가 없어, 이 응답만으로 안개를 신뢰성 있게
+// 판별할 수 없다. 따라서 여기서는 기존 강수/하늘 분류를 유지한다. 별도 시정 관측
+// (예: getWthrDataList 의 VS)이나 사용자 입력으로 안개가 확인되면 mapKmaToWeatherCondition
+// 대신 'fog' 를 직접 세그먼트 weather 로 지정하면 WEATHER_WEIGHT.fog(1.62)가 적용된다.
 export function mapKmaToWeatherCondition(pty: number, sky?: number): WeatherCondition {
   if (pty === 1 || pty === 2 || pty === 3 || pty === 4 || pty === 5 || pty === 6 || pty === 7) {
     return 'rain_or_snow';
@@ -72,6 +78,57 @@ export function mapKmaToWeatherCondition(pty: number, sky?: number): WeatherCond
   // 강수 없음. SKY: 1 맑음, 3 구름많음, 4 흐림
   if (sky !== undefined && sky >= 3) return 'other_not_clear';
   return 'clear';
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 위경도 -> 기상청(KMA) 동네예보 격자(nx, ny) 변환.
+//
+// 기상청 동네예보는 Lambert Conformal Conic(LCC, DFS) 격자 좌표계를 쓴다. 초단기실황/
+// 예보 API 는 위경도가 아니라 이 격자 좌표(nx, ny)를 입력으로 받는다. 기존에는 "변환은
+// 호출부 책임"이라 없었고, 백그라운드가 서울 격자를 하드코딩했다. 전국 어디서나 실제 GPS
+// 좌표의 날씨를 받으려면 여기서 위경도를 격자로 변환한다.
+//
+// 아래 상수/알고리즘은 기상청이 공개한 표준 격자 변환(DFS) 공식이며, 순수 함수로 구현해
+// `node --experimental-strip-types` 로 검증 가능하다. 결과 nx, ny 는 정수로 반올림한다.
+const KMA_GRID = {
+  RE: 6371.00877, // 지구 반경(km)
+  GRID: 5.0, // 격자 간격(km)
+  SLAT1: 30.0, // 표준 위도 1(deg)
+  SLAT2: 60.0, // 표준 위도 2(deg)
+  OLON: 126.0, // 기준점 경도(deg)
+  OLAT: 38.0, // 기준점 위도(deg)
+  XO: 43, // 기준점 X 좌표(격자)
+  YO: 136, // 기준점 Y 좌표(격자)
+} as const;
+
+// 위경도(도 단위)를 기상청 동네예보 격자 좌표 { nx, ny }(정수)로 변환한다.
+// LCC(Lambert Conformal Conic) DFS 순공식. 순수 함수(입력 외 상태 없음).
+export function latLonToGrid(lat: number, lon: number): { nx: number; ny: number } {
+  const DEGRAD = Math.PI / 180.0;
+  const re = KMA_GRID.RE / KMA_GRID.GRID;
+  const slat1 = KMA_GRID.SLAT1 * DEGRAD;
+  const slat2 = KMA_GRID.SLAT2 * DEGRAD;
+  const olon = KMA_GRID.OLON * DEGRAD;
+  const olat = KMA_GRID.OLAT * DEGRAD;
+
+  let sn =
+    Math.tan(Math.PI * 0.25 + slat2 * 0.5) / Math.tan(Math.PI * 0.25 + slat1 * 0.5);
+  sn = Math.log(Math.cos(slat1) / Math.cos(slat2)) / Math.log(sn);
+  let sf = Math.tan(Math.PI * 0.25 + slat1 * 0.5);
+  sf = (Math.pow(sf, sn) * Math.cos(slat1)) / sn;
+  let ro = Math.tan(Math.PI * 0.25 + olat * 0.5);
+  ro = (re * sf) / Math.pow(ro, sn);
+
+  let ra = Math.tan(Math.PI * 0.25 + lat * DEGRAD * 0.5);
+  ra = (re * sf) / Math.pow(ra, sn);
+  let theta = lon * DEGRAD - olon;
+  if (theta > Math.PI) theta -= 2.0 * Math.PI;
+  if (theta < -Math.PI) theta += 2.0 * Math.PI;
+  theta *= sn;
+
+  const nx = Math.floor(ra * Math.sin(theta) + KMA_GRID.XO + 0.5);
+  const ny = Math.floor(ro - ra * Math.cos(theta) + KMA_GRID.YO + 0.5);
+  return { nx, ny };
 }
 
 const KMA_ULTRA_SRT_NCST_URL =

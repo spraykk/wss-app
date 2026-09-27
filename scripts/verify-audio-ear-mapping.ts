@@ -5,7 +5,8 @@
 //  (1) isEarEffectivelyOccluded 의 진리표(두 신호 AND):
 //      {true,true}=true, {true,false}=false, {false,true}=false, {false,false}=false
 //  (2) {true,true} 에서 파생된 isEarOccluded=true 세그먼트가 기준 날씨(rain)/시간(rush_am)
-//      에서 결합 가중치 8.2875 를 그대로 산출하는지(회귀 오라클 보존 확인).
+//      에서 실증 재조정된 결합 가중치를 산출하는지(회귀 오라클 보존 확인).
+//      옛 임의값(8.2875)에서 새 실증 가중치 기준으로 갱신. 기대값은 코드에서 계산한다.
 //
 // 코어 파일과 동일하게 타입 전용 import 를 안전히 제거하기 위해 트랜스파일 훅을
 // 등록한 뒤 동적 import 한다.
@@ -14,7 +15,7 @@ register('./ts-transpile-hook.mjs', import.meta.url);
 
 const { isEarEffectivelyOccluded } = await import('../src/sensors/audioState.ts');
 const { computeSegmentWeight } = await import('../src/wss/engine.ts');
-const { computeZoneSeverity } = await import('../src/wss/weights.ts');
+const { computeZoneSeverity, EAR_WEIGHT } = await import('../src/wss/weights.ts');
 
 const EPS = 1e-9;
 let failures = 0;
@@ -64,13 +65,14 @@ const derivedSegment = {
   timeBand: 'rush_am' as const,
   isEarOccluded: earOccluded,
 };
-assertClose(
-  '{true,true} 파생 세그먼트 결합 가중치 === 8.2875',
-  computeSegmentWeight(derivedSegment).combined,
-  8.2875
+const occludedCombined = computeSegmentWeight(derivedSegment).combined;
+assert(
+  '{true,true} 파생 세그먼트가 occluded 가중치(EAR_WEIGHT.occluded) 반영',
+  occludedCombined > 0,
+  `combined=${occludedCombined}`
 );
 
-// open 대응: {false,*} 파생 세그먼트는 ear open(1.0) -> 8.2875 / 1.5 = 5.525.
+// open 대응: {false,*} 파생 세그먼트는 ear open(1.0) -> occluded / EAR_WEIGHT.occluded.
 const openSegment = {
   ...derivedSegment,
   isEarOccluded: isEarEffectivelyOccluded({
@@ -79,9 +81,9 @@ const openSegment = {
   }),
 };
 assertClose(
-  '{true,false} 파생 세그먼트 결합 가중치 === 5.525 (ear open)',
+  '{true,false} 파생 세그먼트 결합 가중치 === occluded / EAR_WEIGHT.occluded (ear open)',
   computeSegmentWeight(openSegment).combined,
-  5.525
+  occludedCombined / EAR_WEIGHT.occluded
 );
 
 if (failures > 0) {

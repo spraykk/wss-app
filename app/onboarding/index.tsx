@@ -7,6 +7,7 @@
 // 노이즈 캔슬링 감지나 "화면 보며 걷기" 감지 같은 (불가능한) 기능은 주장하지 않는다.
 import { StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { useRouter } from 'expo-router';
+import { palette, spacing, radius, font, shadow } from '../../src/theme';
 
 export default function OnboardingWelcome() {
   const router = useRouter();
@@ -21,7 +22,8 @@ export default function OnboardingWelcome() {
           • 블루투스 이어폰으로 소리를 듣는 중이면 주변음 인지가 어려운 상태로 보고, 경고를 더 민감하게 조정합니다.
         </Text>
         <Text style={styles.bullet}>
-          • 수집한 정보는 기기 안에만 저장되며, 경고 목적 외에는 사용하지 않습니다.
+          • 위치·경로는 기기 안에만 저장되고 서버로 전송하지 않아요. 다른 사용자와
+          비교할 수 있도록 익명 점수와 날짜, 그리고 선택 시 연령'대'만 통계 서버로 보냅니다.
         </Text>
       </View>
 
@@ -29,7 +31,11 @@ export default function OnboardingWelcome() {
         다음 화면에서 위치 권한을 단계적으로 요청합니다. 필요한 이유를 먼저 설명한 뒤 요청해요.
       </Text>
 
-      <TouchableOpacity style={styles.button} onPress={() => router.push('/onboarding/permissions')}>
+      <TouchableOpacity
+        style={styles.button}
+        onPress={() => router.push('/onboarding/permissions')}
+        activeOpacity={0.85}
+      >
         <Text style={styles.buttonText}>시작하기</Text>
       </TouchableOpacity>
     </View>
@@ -37,12 +43,31 @@ export default function OnboardingWelcome() {
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, justifyContent: 'center', padding: 28, gap: 16, backgroundColor: '#fff' },
-  title: { fontSize: 28, fontWeight: '800' },
-  lead: { fontSize: 16, color: '#555' },
-  card: { backgroundColor: '#f4f6f8', borderRadius: 16, padding: 18, gap: 10 },
-  bullet: { fontSize: 15, lineHeight: 22, color: '#333' },
-  note: { fontSize: 13, color: '#777', lineHeight: 20 },
-  button: { backgroundColor: '#1a7f37', paddingVertical: 16, borderRadius: 999, alignItems: 'center', marginTop: 8 },
-  buttonText: { color: '#fff', fontSize: 18, fontWeight: '700' },
+  container: {
+    flex: 1,
+    justifyContent: 'center',
+    padding: spacing.xxl,
+    gap: spacing.lg,
+    backgroundColor: palette.bg,
+  },
+  title: { fontSize: font.hero, fontWeight: '800', color: palette.text },
+  lead: { fontSize: font.label, color: palette.textMuted },
+  card: {
+    backgroundColor: palette.surface,
+    borderRadius: radius.lg,
+    padding: spacing.lg,
+    gap: spacing.md,
+    ...shadow.card,
+  },
+  bullet: { fontSize: font.body, lineHeight: 22, color: palette.text },
+  note: { fontSize: font.small, color: palette.textFaint, lineHeight: 20 },
+  button: {
+    backgroundColor: palette.skyDeep,
+    paddingVertical: spacing.lg,
+    borderRadius: radius.pill,
+    alignItems: 'center',
+    marginTop: spacing.sm,
+    ...shadow.button,
+  },
+  buttonText: { color: palette.onDark, fontSize: font.subtitle, fontWeight: '800' },
 });

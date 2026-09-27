@@ -41,15 +41,48 @@ export function selectNearestZones(
 ): AccidentZone[] {
   // 하드캡 방어: 호출자가 20 이상을 넘겨도 (하드캡 - 1)로 클램프해 boundary region 여유 확보.
   const cap = Math.max(0, Math.min(maxRegions, IOS_REGION_HARD_CAP - 1));
+  if (cap === 0) return [];
 
-  const withDistance = zones.map((zone) => ({
-    zone,
-    distance: haversineMeters(userLat, userLon, zone.latitude, zone.longitude),
-  }));
+  // 성능(시작/재등록 렉 방지): 예전엔 전국 12,780건 전체에 대해 거리 계산 후 전체를
+  // O(n log n) 정렬했다. 여기서는 "거리 오름차순 상위 cap 개"만 유지하는 부분 선택으로
+  // 전체 정렬을 피한다(O(n·cap), cap<=19 이라 사실상 선형). 각 항목의 원본 인덱스를
+  // 함께 들고 다녀, 결과가 예전의 "안정 정렬(stable sort) 후 slice" 와 완전히 동일하도록
+  // 동률 거리는 원본 순서를 그대로 보존한다(입력 배열은 변형하지 않음, 순수 함수).
+  const top: { zone: AccidentZone; distance: number; index: number }[] = [];
 
-  withDistance.sort((a, b) => a.distance - b.distance);
+  // top 배열은 항상 (distance ASC, tie 시 index ASC)로 정렬된 상태를 유지한다.
+  // 안정 정렬과 동일하려면 (distance, index) 사전식 비교로 위치를 정한다.
+  const isBefore = (
+    aDist: number,
+    aIndex: number,
+    bDist: number,
+    bIndex: number
+  ): boolean => aDist < bDist || (aDist === bDist && aIndex < bIndex);
 
-  return withDistance.slice(0, cap).map((entry) => entry.zone);
+  for (let i = 0; i < zones.length; i += 1) {
+    const zone = zones[i];
+    const distance = haversineMeters(userLat, userLon, zone.latitude, zone.longitude);
+
+    // 이미 cap 개가 찼고 현재 항목이 마지막(가장 먼) 항목보다 뒤에 온다면 버린다.
+    if (top.length === cap) {
+      const last = top[cap - 1];
+      if (!isBefore(distance, i, last.distance, last.index)) continue;
+    }
+
+    // 삽입 위치를 (distance, index) 사전식 순서로 찾는다(가장 앞에 올 자리).
+    let lo = 0;
+    let hi = top.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      const m = top[mid];
+      if (isBefore(m.distance, m.index, distance, i)) lo = mid + 1;
+      else hi = mid;
+    }
+    top.splice(lo, 0, { zone, distance, index: i });
+    if (top.length > cap) top.pop();
+  }
+
+  return top.map((entry) => entry.zone);
 }
 
 /**

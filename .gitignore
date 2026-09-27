@@ -24,7 +24,10 @@ yarn-error.*
 .DS_Store
 *.pem
 # local env files
+.env
 .env*.local
+# .env.example 은 자리표시자 템플릿이라 커밋한다(예외)
+!.env.example
 # typescript
 *.tsbuildinfo
 # generated native folders
