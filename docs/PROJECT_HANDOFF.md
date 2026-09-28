@@ -272,12 +272,13 @@ walkMinutes: elapsedMinutes,
 ### 출시 마무리
 - [x] **개발자 도구 프로덕션 숨김**: 진단 패널·자세 측정 도구 진입 링크를 `__DEV__` 게이팅(프로덕션 빌드에서 숨김). 화면/라우트는 개발용으로 유지(6절 21-③).
 - [x] **리포트에서 rawScore/개발자용 raw 상세 제거**: '원점수' 행·raw N.N·세그먼트 분해 표시 제거(표시 전용, 로직 불변)(6절 21-④).
+- [x] **iPhone 전용 출시(`ios.supportsTablet:false`), app.json 중복 정리**: iPad 지원을 꺼 App Store Connect의 iPad 스크린샷 요구를 제거. `UIBackgroundModes`의 "location" 3회 중복→1개, `android.permissions`의 위치/동작 권한 2회 중복→각 1개로 정리(기능 불변).
 - [ ] 앱 아이콘 PNG 확정(현재 SVG. 하늘색 파스텔 배경+흰 발자국 시안 있으나 PNG 변환 보류 상태).
 - [ ] production 빌드 + App Store Connect 등록 + 심사 제출.
 - [ ] 실전 테스트(실제로 걸으며 점수·업로드·알림·차량제외 동작 확인).
 
 ### 알려진 사소한 정리거리 (선택)
-- [ ] `app.json`의 `ios.infoPlist.UIBackgroundModes`에 "location" 3회 중복, `android.permissions`에 동일 권한 2회 중복 - 기능엔 무해하나 정리 가능.
+- [x] `app.json`의 `ios.infoPlist.UIBackgroundModes`에 "location" 3회 중복, `android.permissions`에 동일 권한 2회 중복 - 정리 완료(각 1개).
 
 ---
 
