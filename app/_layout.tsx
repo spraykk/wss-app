@@ -93,7 +93,7 @@ export default function RootLayout() {
       >
         <Stack.Screen name="index" options={{ title: '보행 개선' }} />
         <Stack.Screen name="map" options={{ title: '위험 지도' }} />
-        <Stack.Screen name="report" options={{ title: 'WSS 리포트' }} />
+        <Stack.Screen name="report" options={{ title: '보행 리포트' }} />
         <Stack.Screen name="feedback" options={{ title: '의견 보내기' }} />
         {/* 방식1(Step 2 준비): 자세 측정/기록 도구 화면. 아직 WSS 점수에 반영 안 함(측정용). */}
         <Stack.Screen name="posture-lab" options={{ title: '자세 측정 도구' }} />

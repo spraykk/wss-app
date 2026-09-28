@@ -140,7 +140,7 @@ export default function PostureLabScreen() {
         <Text style={styles.noticeTitle}>🧪 자세 측정 도구 (개발/측정용)</Text>
         <Text style={styles.noticeBody}>
           이 화면은 폰을 여러 자세로 두고 그때의 기울기(각도)를 보고 기록하기 위한 측정
-          도구예요. 여기서 보이는 각도는 아직 WSS 점수에 전혀 반영되지 않아요(감점 없음).
+          도구예요. 여기서 보이는 각도는 아직 보행 안전 점수에 전혀 반영되지 않아요(감점 없음).
           여러 자세의 각도 데이터를 모아, "사용 중"으로 볼 각도 범위를 정하는 다음 단계에서
           쓸 예정이에요.
         </Text>

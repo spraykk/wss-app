@@ -13,7 +13,7 @@ export default function OnboardingWelcome() {
   const router = useRouter();
   return (
     <View style={styles.container}>
-      <Text style={styles.title}>보행 안전 점수(WSS)</Text>
+      <Text style={styles.title}>보행 안전 점수</Text>
       <Text style={styles.lead}>걸으면서 위험한 순간을 놓치지 않도록 돕는 앱이에요.</Text>
 
       <View style={styles.card}>
