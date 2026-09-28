@@ -174,7 +174,7 @@ export default function ReportScreen() {
       {/* FEAT-003: 오늘의 총점(보행 시간 가중평균) 카드. 하루 여러 보행을 보행 시간으로 가중평균한
           '오늘의 대표 점수'를 명확히 표기한다. 값 출처는 computeTodayScore(=주간 마지막 슬롯). */}
       <View style={styles.todayCard}>
-        <Text style={styles.todayTitle}>오늘의 총점(보행 시간 가중평균)</Text>
+        <Text style={styles.todayTitle}>오늘의 총점</Text>
         {todayScore !== null ? (
           <>
             <Text style={styles.todayScore}>{Math.round(todayScore)}점</Text>
