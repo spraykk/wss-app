@@ -20,6 +20,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import * as Location from 'expo-location';
 import type { WalkSegment, WSSResult } from '../types';
 import { computeWSS } from '../wss/engine';
+import { hasWalked } from '../wss/walkGate';
 import { loadAccidentZones } from '../data/accidentZones';
 import {
   registerNearbyGeofences,
@@ -71,9 +72,10 @@ export interface UseWalkSession {
   segments: WalkSegment[];
   isTracking: boolean;
   start: () => Promise<void>;
-  // stop 은 방금 종료한 보행의 최종 결과(WSSResult)를 반환한다. 세그먼트가 0이면
-  // 저장/표시할 결과가 없으므로 null 을 반환한다. 홈 화면이 이 값으로 '이번 보행의
-  // 점수는 X점입니다'를 안내한다(진행 중 실시간 점수 미표시).
+  // stop 은 방금 종료한 보행의 최종 결과(WSSResult)를 반환한다. "실제로 걸은 시간
+  // (확정 보행 시간 합)"이 0이면 저장/표시할 결과가 없으므로 null 을 반환한다(세그먼트가
+  // 있든 없든 동일). 홈 화면이 이 값으로 '이번 보행의 점수는 X점입니다'를 안내한다
+  // (진행 중 실시간 점수 미표시). null 이면 홈은 '측정된 보행이 없어요'를 표시한다.
   stop: () => Promise<WSSResult | null>;
 }
 
@@ -183,11 +185,23 @@ export function useWalkSession(): UseWalkSession {
 
     // 최종 세션을 읽어 WSS 결과를 history 에 저장(로컬 저장은 항상 우선이므로 await).
     // FEAT-002: 방금 종료한 보행 결과를 호출부(홈)로 반환하기 위해 바깥 변수에 담는다.
-    // 세그먼트가 0이면 결과가 없으므로 null 을 유지한다.
+    //
+    // 판정 기준(플랫폼 일관성 수정): 예전에는 "세그먼트 유무(segments.length>0)"로
+    // 저장/표시를 게이팅했다. 그러나 iOS 는 세션 시작 시 현재 위치를 한 번 잡아
+    // (걷지 않아도) 세그먼트가 1개 생겨 computeWSS 가 감점 0 => displayScore 100 을
+    // 돌려줬고, 결국 "안 걷고 100점"이 떴다. 안드로이드는 그 시작 위치 샘플이 없어
+    // 세그먼트 0 => null => "측정된 보행이 없어요"가 떠 플랫폼 간 불일치가 생겼다.
+    // 이제 "실제로 걸은 시간(확정 보행 시간 합, computeWSS 의 totalWalkMinutes)"이
+    // 0보다 클 때만 결과로 인정한다. 확정 보행 시간은 정지/차량/센서공백을 이미 0으로
+    // 처리한 값이라, 0초 보행(시작→즉시 종료)은 세그먼트가 있어도 걸은 시간 0 => null
+    // 로 통일된다(양 플랫폼 동일하게 "측정된 보행이 없어요"). computeWSS 자체는 불변이며
+    // "저장/표시 여부"만 이 게이팅으로 결정한다. 0초 보행은 history/서버에 남기지 않아
+    // 이력/주간그래프/서버통계가 오염되지 않는다.
     let finishedResult: WSSResult | null = null;
     const finalSession = await loadActiveSession();
-    if (finalSession.segments.length > 0) {
-      const computed = computeWSS(finalSession.segments);
+    const computed = computeWSS(finalSession.segments);
+    if (hasWalked(computed)) {
+      // (computed 는 위에서 이미 계산해 두었다.)
       // 보행이 끝난 로컬 날짜를 결과에 도장 찍는다(업로드 date_iso 와 동일 값).
       // 주간 일별 막대그래프가 이 날짜로 하루별 대표 점수를 집계한다.
       // 같은 Date 인스턴스로 dateISO 와 recordedAt 을 함께 뽑아 둘이 일관되게 한다.
@@ -231,7 +245,7 @@ export function useWalkSession(): UseWalkSession {
     const cleared = emptyActiveSession();
     if (isMountedRef.current) setSession(cleared);
 
-    // 방금 종료한 보행 결과를 반환한다(세그먼트 0이면 null). 홈이 이 값으로 점수를 안내한다.
+    // 방금 종료한 보행 결과를 반환한다(실제 걸은 시간 0이면 null). 홈이 이 값으로 점수를 안내한다.
     return finishedResult;
   }, []);
 

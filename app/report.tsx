@@ -287,9 +287,8 @@ export default function ReportScreen() {
           </>
         ) : (
           <Text style={styles.muted}>
-            측정 중이에요. 다른 사용자 데이터가 아직 부족합니다
-            {stats ? ` (${stats.sampleCount}명)` : ''}. 참여자가 늘어나면 평균과 상위
-            25% 기준을 보여드릴게요.
+            측정 중이에요. 다른 사용자 데이터가 아직 부족합니다. 참여자가 늘어나면 평균과
+            상위 25% 기준을 보여드릴게요.
           </Text>
         )}
 
@@ -325,9 +324,8 @@ export default function ReportScreen() {
           </>
         ) : (
           <Text style={styles.muted}>
-            측정 중이에요. {bandLabel ? `${bandLabel} ` : ''}그룹 데이터가 아직 부족합니다
-            {groupStats ? ` (${groupStats.sampleCount}명)` : ''}. 같은 또래가 늘어나면
-            그룹 평균과 상위 25% 기준을 보여드릴게요.
+            측정 중이에요. {bandLabel ? `${bandLabel} ` : ''}그룹 데이터가 아직
+            부족합니다. 같은 또래가 늘어나면 그룹 평균과 상위 25% 기준을 보여드릴게요.
           </Text>
         )}
       </View>

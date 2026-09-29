@@ -23,7 +23,9 @@ export default function HomeScreen() {
 
   // 방금 종료한 보행의 결과(없으면 null). '측정 시작' 시 초기화한다.
   const [lastResult, setLastResult] = useState<WSSResult | null>(null);
-  // 세그먼트 없이 종료해 표시할 점수가 없었던 경우를 구분해 안내 문구를 띄운다.
+  // 실제로 걸은 시간이 0이라(시작→즉시 종료 등) 표시할 점수가 없었던 경우를 구분해
+  // 안내 문구를 띄운다. stop()이 걸은 시간>0 일 때만 결과를 돌려주고, 0이면 null 을
+  // 돌려주므로 iOS/안드로이드 모두 일관되게 '측정된 보행이 없어요'가 뜬다.
   const [endedWithoutWalk, setEndedWithoutWalk] = useState(false);
 
   // FEAT-002: 자동 감지된 오디오 상태를 읽기 전용으로만 표시(수동 컨트롤 없음).
@@ -78,7 +80,7 @@ export default function HomeScreen() {
           </Text>
         </View>
       ) : endedWithoutWalk ? (
-        // 세그먼트 0으로 종료 -> 100점을 띄우지 않고 안내만 한다.
+        // 실제로 걸은 시간 0으로 종료 -> 100점을 띄우지 않고 안내만 한다(플랫폼 일관).
         <View style={styles.statusCard}>
           <Text style={styles.statusTitle}>측정된 보행이 없어요</Text>
           <Text style={styles.statusHint}>보행을 측정해 안전 점수를 확인해요</Text>
