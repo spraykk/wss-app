@@ -12,6 +12,10 @@
 // @supabase/supabase-js 와 expo-constants 는 정적 import 하지 않고 지연 require 로
 // 로드한다(apiKey.ts 와 동일한 이유). 이렇게 해야 이 모듈을 참조하는 순수 코드나
 // 검증 스크립트가 node_modules 없는 샌드박스에서 모듈 해석 오류를 일으키지 않는다.
+//
+// 단, expo extra/공개 env 리더는 expo-constants 를 "지연 require" 로만 쓰는 순수한
+// 헬퍼(src/data/expoExtra.ts)라 정적 import 해도 샌드박스 안전성이 깨지지 않는다.
+import { readPublicEnv } from './expoExtra';
 
 // 익명 연령대(밴드). 정확한 나이가 아니라 5개 밴드 중 하나이며, 미선택은 null.
 // 스키마 check 제약(age_band is null or age_band in (...))과 문자열이 정확히 일치한다.
@@ -55,30 +59,16 @@ export interface FeedbackSubmission {
   ageBand?: AgeBandValue | null;
 }
 
-// env 또는 expo-constants.extra 에서 문자열 값을 읽는다(apiKey.ts 패턴 재사용).
-function readEnv(name: string): string | null {
-  const fromEnv = process.env[name];
-  if (typeof fromEnv === 'string' && fromEnv.trim().length > 0) {
-    return fromEnv.trim();
-  }
-  let extra: Record<string, unknown> = {};
-  try {
-    const Constants = require('expo-constants').default;
-    extra = (Constants?.expoConfig?.extra ?? {}) as Record<string, unknown>;
-  } catch {
-    extra = {};
-  }
-  const fromExtra = extra[name];
-  if (typeof fromExtra === 'string' && fromExtra.trim().length > 0) {
-    return fromExtra.trim();
-  }
-  return null;
-}
-
 // Supabase URL/공개키를 env 에서 읽는다. 둘 중 하나라도 없으면 null(미설정).
+//
+// 버그 수정: 예전에는 Constants.expoConfig.extra 한 경로만 확인했는데, OTA
+// (expo-updates)가 활성인 런타임에서는 expoConfig 가 null 이 되고 설정이 manifest2/
+// 레거시 manifest 로 올 수 있어, app.json 의 extra 에만 넣어 둔 Supabase URL/키가
+// "미설정"으로 오인됐다(-> getClient() null -> uploadScore 조용히 no-op -> "서버 전송
+// 안 됨"). 이제 세 경로를 모두 병합해 읽는 공용 리더(readPublicEnv)로 견고화한다.
 export function getSupabaseConfig(): { url: string; key: string } | null {
-  const url = readEnv('EXPO_PUBLIC_SUPABASE_URL');
-  const key = readEnv('EXPO_PUBLIC_SUPABASE_KEY');
+  const url = readPublicEnv('EXPO_PUBLIC_SUPABASE_URL');
+  const key = readPublicEnv('EXPO_PUBLIC_SUPABASE_KEY');
   if (!url || !key) return null;
   return { url, key };
 }

@@ -4,10 +4,15 @@
 // process.env 로 읽을 수 있다. 런타임 환경에 따라 expo-constants 의 extra 로도
 // 노출될 수 있어, 두 경로를 모두 확인한다. 키가 없으면 null 을 반환한다.
 //
-// 주의: expo-constants 는 정적 import 하지 않고 getKmaApiKey 안에서 require 로
-// 지연 로드한다. 이렇게 해야 이 모듈에서 순수 함수(normalizeApiKey)만 import 하는
-// 코드(예: src/data/accidentZones.ts → fetchAccidentZonesFromTAAS, 검증 스크립트)가
-// expo-constants 런타임 의존을 끌어오지 않는다. Metro/RN 은 require 를 지원한다.
+// 버그 수정: 예전에는 Constants.expoConfig.extra 한 경로만 확인해, OTA(expo-updates)
+// 활성 런타임에서 expoConfig 가 null 이면(설정이 manifest2/레거시 manifest 로 옴)
+// app.json extra 의 키를 못 읽었다. 이제 세 경로를 병합하는 공용 리더(readPublicEnv,
+// src/data/expoExtra.ts)를 재사용해 견고화한다(Supabase 리더와 동일한 근본 원인).
+//
+// expoExtra 는 expo-constants 를 "지연 require" 로만 쓰는 순수 헬퍼라, 여기서 정적
+// import 해도 순수 함수(normalizeApiKey)만 쓰는 코드/검증 스크립트의 샌드박스
+// 안전성을 깨지 않는다.
+import { readPublicEnv } from './expoExtra';
 
 // data.go.kr(공공데이터포털) serviceKey 정규화 헬퍼.
 //
@@ -33,21 +38,7 @@ export function normalizeApiKey(rawKey: string): string {
 }
 
 // KMA(기상청) 단기예보 API 키를 반환한다. 없으면 null (날씨는 '맑음' 폴백).
+// process.env -> 병합된 expo extra(expoConfig/manifest2/manifest) 순으로 확인한다.
 export function getKmaApiKey(): string | null {
-  const fromEnv = process.env.EXPO_PUBLIC_KMA_API_KEY;
-  if (fromEnv && fromEnv.trim().length > 0) return fromEnv.trim();
-
-  let extra: Record<string, unknown> = {};
-  try {
-    // expo-constants 지연 로드(위 주석 참고). 네이티브/Expo 런타임에서만 존재한다.
-    const Constants = require('expo-constants').default;
-    extra = (Constants?.expoConfig?.extra ?? {}) as Record<string, unknown>;
-  } catch {
-    extra = {};
-  }
-  const fromExtra = extra.EXPO_PUBLIC_KMA_API_KEY;
-  if (typeof fromExtra === 'string' && fromExtra.trim().length > 0) {
-    return fromExtra.trim();
-  }
-  return null;
+  return readPublicEnv('EXPO_PUBLIC_KMA_API_KEY');
 }

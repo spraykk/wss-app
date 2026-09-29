@@ -14,6 +14,7 @@ import { getOrCreateDeviceId } from '../src/storage/deviceId';
 import { getAgeBand } from '../src/storage/ageBand';
 import { submitFeedbackDetailed } from '../src/data/supabase';
 import type { FeedbackCategory, SubmitResult } from '../src/data/supabase';
+import { readAppVersion } from '../src/data/expoExtra';
 import { palette, spacing, radius, font, shadow } from '../src/theme';
 
 // 카테고리 4종(스키마/ submitFeedback 과 동일). 라벨은 한글로 표시한다.
@@ -25,22 +26,6 @@ const CATEGORIES: { key: FeedbackCategory; label: string; emoji: string }[] = [
 ];
 
 const MAX_MESSAGE = 2000;
-
-// 앱 버전을 expo-constants(있으면)에서 지연 require 로 읽는다. 실패 시 null.
-// 정적 import 하지 않는 이유는 supabase.ts/apiKey.ts 와 동일(샌드박스 모듈 해석 보호).
-function readAppVersion(): string | null {
-  try {
-    const Constants = require('expo-constants').default;
-    const version =
-      Constants?.expoConfig?.version ?? Constants?.manifest?.version ?? null;
-    if (typeof version === 'string' && version.trim().length > 0) {
-      return version.trim();
-    }
-  } catch {
-    // expo-constants 미존재/오류 -> 버전 없이 진행.
-  }
-  return null;
-}
 
 type SubmitState = 'idle' | 'sending' | 'success' | 'error';
 
