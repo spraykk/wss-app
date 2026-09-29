@@ -91,7 +91,14 @@ export default function RootLayout() {
           contentStyle: { backgroundColor: palette.bg },
         }}
       >
-        <Stack.Screen name="index" options={{ title: '보행 개선' }} />
+        {/* 홈(index)은 최상위 화면이므로 뒤로가기 제공을 완전히 제거한다.
+            headerBackVisible:false 로 iOS 헤더의 뒤로가기(‹)를 숨기고,
+            gestureEnabled:false 로 iOS 엣지 스와이프 뒤로가기를 차단하여
+            온보딩 화면으로 되돌아갈 수 없게 한다(하위 화면 뒤로가기는 유지). */}
+        <Stack.Screen
+          name="index"
+          options={{ title: '보행 개선', headerBackVisible: false, gestureEnabled: false }}
+        />
         <Stack.Screen name="map" options={{ title: '위험 지도' }} />
         <Stack.Screen name="report" options={{ title: '보행 리포트' }} />
         <Stack.Screen name="feedback" options={{ title: '의견 보내기' }} />

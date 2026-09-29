@@ -187,6 +187,8 @@ belowCriticalThreshold = rawScore < 60
 
 > **개발자 측 남은 조작(변동 없음)**: 위 2건은 판정 게이팅(`stop`)과 표시 문자열 변경뿐이라 서버 스키마·업로드 페이로드·`computeWSS` 채점 로직에 영향이 없다. 새 preview 빌드로 (1) iOS/안드로이드에서 시작→즉시 종료 시 양쪽 모두 '측정된 보행이 없어요'가 뜨는지, (2) 리포트 부족 안내에 '(N명)'이 안 보이는지 실기기에서 눈으로 확인하면 된다.
 
+24. **홈(index) 화면 뒤로가기 제거(온보딩 복귀 차단)**: 홈(`app/_layout.tsx`의 `Stack.Screen name="index"`)에 `headerBackVisible:false`(iOS 헤더 뒤로가기 ‹ 숨김)와 `gestureEnabled:false`(iOS 엣지 스와이프 뒤로가기 차단)를 추가해, 최상위 화면인 홈에서 뒤로가기 제공을 완전히 제거하고 온보딩 첫 화면으로 되돌아갈 수 없게 했다. 하위 화면(map/report/feedback/posture-lab/diagnostics)의 뒤로가기는 그대로 유지한다. 온보딩→홈 전환은 기존대로 `router.replace('/')`와 `_layout.tsx` 리다이렉트의 `replace` 사용을 유지한다(스택을 비워 back 미생성). 표시/네비게이션 전용 변경이라 채점 로직·업로드 페이로드에 영향이 없다.
+
 ---
 
 ## 7. ★ 과제 A - 스마트폰 사용(화면 보며 걷기) 추정 [자세 기반 감지 채택됨]
