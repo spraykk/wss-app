@@ -52,6 +52,95 @@ export interface MotionSample {
   nowMs: number;
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// 좌표 기반 속도 폴백 (안드로이드 speed 결측/0 대응) - 순수 함수.
+//
+// 배경/결함: 백그라운드 위치 파이프라인은 walking/idle/vehicle 판정을 GPS 가 주는
+// coords.speed 하나에만 의존한다. 그런데 안드로이드는 Accuracy.Balanced(저전력) 위치
+// 모드에서 도플러 속도를 채우지 못해 speed 를 null/undefined/음수(결측)나 정확히 0 으로
+// 주는 경우가 잦다(이동 중에도!). 그 결과 아무리 걸어도 decideLocationWalking 이
+// walking=false 로 수렴해 보행 시간(walkMinutes)이 전혀 쌓이지 않았다(안드로이드 증상:
+// "돌아다녀도 측정 0"). iOS 는 activityType:Fitness+실제 GPS 로 speed 가 대체로 채워져
+// 증상이 덜하지만, 같은 코드라 조건이 맞으면 동일하게 발생할 수 있다.
+//
+// 해결: 위치 샘플에는 speed 가 없어도 좌표(위경도)와 시각은 항상 있으므로, 직전 샘플과의
+// "거리 ÷ 시간"으로 지상 속도(m/s)를 직접 계산해 폴백으로 쓴다(배터리 영향 없음 - 이미
+// 받는 좌표만 이용). 이 계산은 순수 함수라 verify 스크립트로 검증한다.
+
+// 좌표 기반 속도 폴백을 위한 최소/최대 시간 간격(ms). 너무 짧으면(<1초) GPS 좌표 지터로
+// 속도가 과대 추정되고, 너무 길면(>30초) 그 사이 정지/이동이 섞여 평균이 왜곡된다. 이
+// 범위를 벗어난 간격은 신뢰하지 않고 결측(null)으로 처리한다(정직성: 모르면 단정하지 않음).
+export const MIN_DERIVED_SPEED_INTERVAL_MS = 1000;
+export const MAX_DERIVED_SPEED_INTERVAL_MS = 30000;
+
+// 지구 반경(m). 하버사인 거리 계산용.
+const EARTH_RADIUS_M = 6371000;
+
+// 두 위경도 좌표 사이의 대원거리(m)를 하버사인 공식으로 계산하는 순수 함수.
+export function haversineMeters(
+  lat1: number,
+  lon1: number,
+  lat2: number,
+  lon2: number
+): number {
+  const toRad = (d: number): number => (d * Math.PI) / 180;
+  const dLat = toRad(lat2 - lat1);
+  const dLon = toRad(lon2 - lon1);
+  const a =
+    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) * Math.sin(dLon / 2);
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  return EARTH_RADIUS_M * c;
+}
+
+// 이전 좌표 샘플과 현재 좌표 샘플로부터 지상 속도(m/s)를 유도하는 순수 함수.
+// 시간 간격이 신뢰 구간(MIN~MAX)을 벗어나거나 좌표/시각이 유효하지 않으면 null(결측)을
+// 반환한다. GPS 좌표 지터에 의한 과대 추정을 막기 위해 간격 하한을 둔다.
+export function deriveSpeedFromCoords(
+  prev: { latitude: number; longitude: number; atMs: number } | null,
+  curr: { latitude: number; longitude: number; atMs: number }
+): number | null {
+  if (prev === null) return null;
+  const dtMs = curr.atMs - prev.atMs;
+  if (
+    !Number.isFinite(dtMs) ||
+    dtMs < MIN_DERIVED_SPEED_INTERVAL_MS ||
+    dtMs > MAX_DERIVED_SPEED_INTERVAL_MS
+  ) {
+    return null;
+  }
+  if (
+    !Number.isFinite(prev.latitude) ||
+    !Number.isFinite(prev.longitude) ||
+    !Number.isFinite(curr.latitude) ||
+    !Number.isFinite(curr.longitude)
+  ) {
+    return null;
+  }
+  const meters = haversineMeters(prev.latitude, prev.longitude, curr.latitude, curr.longitude);
+  const speed = meters / (dtMs / 1000);
+  return Number.isFinite(speed) && speed >= 0 ? speed : null;
+}
+
+// GPS 가 준 speed 가 신뢰할 만한지(유효한 유한 양수인지) 판정하는 순수 헬퍼.
+// 안드로이드는 이동 중에도 speed 를 정확히 0 으로 주는 경우가 많으므로, 0(및 음수/결측/
+// 비유한)은 "신뢰할 수 없음"으로 보고 좌표 기반 폴백을 쓰게 한다. 양수 speed 만 그대로 신뢰.
+export function isReportedSpeedTrustworthy(speedMps: number | null | undefined): boolean {
+  return typeof speedMps === 'number' && Number.isFinite(speedMps) && speedMps > 0;
+}
+
+// GPS speed 를 우선 쓰되(신뢰 가능할 때만), 아니면 좌표 기반 유도 속도로 폴백해 "분류에 쓸
+// 최종 속도"를 고르는 순수 함수. 둘 다 없으면 null(결측 -> 히스테리시스가 처리).
+//   - reportedSpeed 가 신뢰 가능(양수 유한)  -> 그대로 사용.
+//   - 아니면 derivedSpeed(좌표 기반)          -> 폴백 사용(null 일 수 있음).
+export function resolveEffectiveSpeed(
+  reportedSpeed: number | null | undefined,
+  derivedSpeed: number | null
+): number | null {
+  if (isReportedSpeedTrustworthy(reportedSpeed)) return reportedSpeed as number;
+  return derivedSpeed;
+}
+
 // 속도만으로 보행 속도 범위인지 판정하는 순수 헬퍼(하위호환: 기존 isWalkingSpeed 대체).
 export function isWalkingSpeed(
   speedMps: number,

@@ -41,7 +41,12 @@ import { loadActiveSession, saveActiveSession } from './sessionStore';
 import type { ActiveSession } from './sessionStore';
 import { readAudioEnvironmentSnapshot } from '../sensors/useAudioEnvironment';
 import { isEarEffectivelyOccluded } from '../sensors/audioState';
-import { decideLocationWalking, createInitialMotionState } from '../sensors/motionClassifier';
+import {
+  decideLocationWalking,
+  createInitialMotionState,
+  deriveSpeedFromCoords,
+  resolveEffectiveSpeed,
+} from '../sensors/motionClassifier';
 import type { MotionState } from '../sensors/motionClassifier';
 import { gravityToPitchRoll } from '../sensors/postureMath';
 import {
@@ -487,21 +492,42 @@ function shouldSendCriticalScoreAlert(nowMs: number): boolean {
 // ─────────────────────────────────────────────────────────────────────────────
 let lastProcessedAt: number | null = null;
 
-// 차량 탑승 오인 방지 + 정지(idle) 무감점: 백그라운드 위치 샘플의 속도(coords.speed)를 순수
-// 분류기(decideLocationWalking)로 walking/idle/vehicle 로 분류한다. Pedometer 걸음은 백그라운드
-// 위치 태스크에 없으므로 속도만으로 분류한다(도보 속도 + 고속 쿨다운 + 속도결측 히스테리시스).
+// 차량 탑승 오인 방지 + 정지(idle) 무감점: 백그라운드 위치 샘플의 속도를 순수 분류기
+// (decideLocationWalking)로 walking/idle/vehicle 로 분류한다. Pedometer 걸음은 백그라운드
+// 위치 태스크에 없으므로 속도로 분류한다(도보 속도 + 고속 쿨다운 + 속도결측 히스테리시스).
 let motionState: MotionState = createInitialMotionState();
+
+// 좌표 기반 속도 폴백용: 마지막으로 처리한 위치 샘플의 좌표+시각. 아직 없으면 null.
+// 안드로이드가 coords.speed 를 결측/0 으로 줄 때, 직전 좌표와의 거리·시간으로 속도를 직접
+// 유도하기 위해 보관한다. resetSessionTaskState/onExitAllZones 에서 함께 리셋한다.
+let lastCoordSample: { latitude: number; longitude: number; atMs: number } | null = null;
 
 // 위치 샘플의 보행 결정(스킵 여부 + walking 신호)을 계산하고 분류기 상태를 갱신한다.
 // - vehicle => skipAsVehicle=true (세그먼트 미누적, 기존 동작 유지)
 // - idle(정지/신호대기) => skipAsVehicle=false, walking=false (감점 안 함, 경과분은 no-use)
 // - walking(확정 보행) => skipAsVehicle=false, walking=true (자세 기반 사용 감점 후보)
+//
+// [안드로이드 speed 결측/0 대응] GPS 가 준 coords.speed 가 신뢰 불가(결측/음수/0)면, 직전
+// 좌표와의 거리·시간으로 유도한 속도(deriveSpeedFromCoords)로 폴백해 분류한다. iOS 처럼
+// speed 가 양수로 잘 오면 그대로 신뢰하므로 iOS 동작은 바뀌지 않는다(플랫폼 공통 순수 로직).
 // 속도 결측 시의 정직성 규칙/히스테리시스는 decideLocationWalking 주석 참고.
 function decideSampleWalking(
   sample: Location.LocationObject,
   nowMs: number
 ): { skipAsVehicle: boolean; walking: boolean } {
-  const decision = decideLocationWalking(motionState, sample.coords.speed, nowMs);
+  // 직전 좌표와의 거리·시간으로 지상 속도를 유도(간격이 신뢰 구간 밖이면 null).
+  const curr = {
+    latitude: sample.coords.latitude,
+    longitude: sample.coords.longitude,
+    atMs: nowMs,
+  };
+  const derivedSpeed = deriveSpeedFromCoords(lastCoordSample, curr);
+  // GPS speed 가 신뢰 가능하면 그것을, 아니면 유도 속도를 분류에 쓴다(둘 다 없으면 null).
+  const effectiveSpeed = resolveEffectiveSpeed(sample.coords.speed, derivedSpeed);
+  // 다음 샘플의 폴백 계산을 위해 현재 좌표를 기억한다.
+  lastCoordSample = curr;
+
+  const decision = decideLocationWalking(motionState, effectiveSpeed, nowMs);
   motionState = decision.next;
   // 진단 패널이 walking/idle/vehicle 구분을 사람이 읽을 수 있게 표시하도록 최신 모드를 기록한다.
   // 속도 결측 시 decideLocationWalking 은 mode 를 직전 값으로 유지하므로 그대로 반영된다.
@@ -653,6 +679,9 @@ export function makeGeofenceSessionCallbacks(): {
 export function resetSessionTaskState(): void {
   lastProcessedAt = null;
   motionState = createInitialMotionState();
+  // 좌표 기반 속도 폴백 상태도 리셋(세션 간 좌표가 새지 않도록). 다음 세션 첫 샘플은
+  // 직전 좌표가 없어 유도 속도 null 이 되지만, 이후 샘플부터 정상적으로 폴백이 작동한다.
+  lastCoordSample = null;
   lastCriticalScoreAlertAt = null;
   // FEAT-003: 밀집 진입 알림 상태도 리셋(다음 세션에서 첫 진입을 다시 알릴 수 있게).
   lastDenseClusterId = null;
