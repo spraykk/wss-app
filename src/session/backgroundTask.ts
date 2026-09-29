@@ -24,6 +24,7 @@ import { Accelerometer, DeviceMotion } from 'expo-sensors';
 import type { AccidentZone } from '../types';
 import { loadAccidentZones, findEnclosingZones } from '../data/accidentZones';
 import { computeDenseClusterAt, decideDenseClusterAlert } from '../data/zoneCluster';
+import { decideZoneEntryAlert } from './zoneAlertGate';
 import { computeRiskIntensity } from '../wss/weights';
 import { getCurrentTimeBand } from '../wss/context';
 import { computeWSS } from '../wss/engine';
@@ -400,7 +401,18 @@ export async function processLocationSample(
 
   // 5) WSS 재계산 후 알림 조건 평가.
   const wss = computeWSS(nextSession.segments);
-  if (wss.enteredHighRiskZoneWhileUsingPhone || wss.belowCriticalThreshold) {
+  // 고위험 진입 알림은 '처음 한 번만' 발송한다(구간 안에 머무는 동안 매 위치 이벤트마다
+  // 재발송하던 결함이 알림 도배/렉의 원인이었다). 발송 판정은 순수 게이트
+  // (decideZoneEntryAlert)로 위임하며, 위 밀집 클러스터 알림 게이트(decideDenseClusterAlert)와
+  // 동일한 진입 가드 패턴이다: 조건이 충족된 구간에 진입하면 한 번 발송, 같은 구간에 머무는
+  // 동안 재발송하지 않고, 구간을 벗어나면(zoneId '') lastAlertedZoneId 를 '' 로 리셋해 재진입/
+  // 다른 구간 진입 시 다시 발송한다. 위험 조건 자체(enteredHighRiskZoneWhileUsingPhone ||
+  // belowCriticalThreshold)는 그대로 유지한다(무엇이 고위험인지 정의는 변경하지 않음).
+  const inZone = zoneId !== '';
+  const conditionMet = wss.enteredHighRiskZoneWhileUsingPhone || wss.belowCriticalThreshold;
+  const zoneDecision = decideZoneEntryAlert(lastAlertedZoneId, zoneId, inZone, conditionMet);
+  lastAlertedZoneId = zoneDecision.nextZoneId;
+  if (zoneDecision.fire) {
     await presentHighRiskAlert(zoneName || '위험 구간');
   }
   // 점수 자체가 위험 구간(60점 미만)으로 떨어지면 추가 위험 알림을 보낸다.
@@ -417,6 +429,15 @@ export async function processLocationSample(
 // 다시 알린다(processLocationSample 의 밀집 분기 참고). 세션 종료 시 resetSessionTaskState 에서
 // 리셋되어, 다음 세션에서 첫 진입을 다시 알릴 수 있다.
 let lastDenseClusterId: string | null = null;
+
+// ── FEAT-002: 고위험 구간(빨간 원) 진입 알림 상태(모듈 스코프) ────────────────
+// 마지막으로 고위험 진입 알림(presentHighRiskAlert)을 보낸 대표 zoneId. '처음 한 번만' 규칙의
+// 근거다: 조건이 충족된 구간에 진입해 현재 zoneId 가 이 값과 다를 때만 발송한다. 같은 구간에
+// 머무는 동안은 재발송하지 않고, 구간 밖(zoneId '')으로 나가면 '' 로 리셋해 재진입/다른 구간에서
+// 다시 알린다(processLocationSample 의 step 5 참고). 밀집 클러스터 알림 게이트와 동일한 진입 가드
+// 패턴이며, '' 는 구간 밖 센티넬이다. 세션 종료 시 resetSessionTaskState 에서 리셋되어, 다음
+// 세션에서 첫 진입을 다시 알릴 수 있다.
+let lastAlertedZoneId: string = '';
 
 // 밀집 진입 알림의 세션 내 쿨다운(밀리초). '처음 한 번만'은 클러스터 id 비교로 이미 보장되지만,
 // 클러스터를 짧게 들락날락하는 등의 경계에서 알림이 도배되지 않도록 시간 가드를 추가로 둔다
@@ -636,6 +657,8 @@ export function resetSessionTaskState(): void {
   // FEAT-003: 밀집 진입 알림 상태도 리셋(다음 세션에서 첫 진입을 다시 알릴 수 있게).
   lastDenseClusterId = null;
   lastDenseZoneAlertAt = null;
+  // FEAT-002: 고위험 구간 진입 알림 마커도 리셋(다음 세션에서 첫 진입을 다시 알릴 수 있게).
+  lastAlertedZoneId = '';
   latestPitchSample = null;
   postureContinuityState = createInitialPostureContinuityState();
   latestPostureContinuity = null;
