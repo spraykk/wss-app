@@ -38,7 +38,7 @@
 
 ### 개발/검증 환경의 제약 (AI 작업 시 필수 인지)
 - **AI 샌드박스는 외부망 차단(INTEGRATIONS_ONLY)** + npm 레지스트리 접근 불가. 따라서 **RN 앱을 실제로 빌드/실행할 수 없고**, 새 npm 패키지도 설치 불가.
-- 대신 **순수 로직을 `scripts/verify-*.ts` 검증 스크립트**로 검증한다. 실행: `env -u NODE_OPTIONS node --experimental-strip-types scripts/verify-<name>.ts`. 현재 **25종** 존재, 전부 통과 유지가 필수 조건.
+- 대신 **순수 로직을 `scripts/verify-*.ts` 검증 스크립트**로 검증한다. 실행: `env -u NODE_OPTIONS node --experimental-strip-types scripts/verify-<name>.ts`. 현재 **28종** 존재, 전부 통과 유지가 필수 조건.
 - 그래서 규칙: `src/` 안에서는 node 표준 라이브러리(fs/path/url 등) import 금지(RN 런타임에 없음). JSON은 Metro `require`로만 로드. 순수 함수는 배열/값 주입식으로 설계해 node로 검증 가능하게 한다.
 - 실제 앱 동작 검증은 **개발자가 실기기에서 수동으로** 한다(AI는 못 함).
 
@@ -188,6 +188,24 @@ belowCriticalThreshold = rawScore < 60
 > **개발자 측 남은 조작(변동 없음)**: 위 2건은 판정 게이팅(`stop`)과 표시 문자열 변경뿐이라 서버 스키마·업로드 페이로드·`computeWSS` 채점 로직에 영향이 없다. 새 preview 빌드로 (1) iOS/안드로이드에서 시작→즉시 종료 시 양쪽 모두 '측정된 보행이 없어요'가 뜨는지, (2) 리포트 부족 안내에 '(N명)'이 안 보이는지 실기기에서 눈으로 확인하면 된다.
 
 24. **홈(index) 화면 뒤로가기 제거(온보딩 복귀 차단)**: 홈(`app/_layout.tsx`의 `Stack.Screen name="index"`)에 `headerBackVisible:false`(iOS 헤더 뒤로가기 ‹ 숨김)와 `gestureEnabled:false`(iOS 엣지 스와이프 뒤로가기 차단)를 추가해, 최상위 화면인 홈에서 뒤로가기 제공을 완전히 제거하고 온보딩 첫 화면으로 되돌아갈 수 없게 했다. 하위 화면(map/report/feedback/posture-lab/diagnostics)의 뒤로가기는 그대로 유지한다. 온보딩→홈 전환은 기존대로 `router.replace('/')`와 `_layout.tsx` 리다이렉트의 `replace` 사용을 유지한다(스택을 비워 back 미생성). 표시/네비게이션 전용 변경이라 채점 로직·업로드 페이로드에 영향이 없다.
+
+25. **위험구역 진입 알림 1회화 + 점수 업로드 무증상 실패 규명/수정(2건)**:
+    - **(A) 위험구역(빨간 원) 진입 알림 1회화**: 예전에는 `backgroundTask.processLocationSample` 5단계에서 위험구역 조건(`wss.enteredHighRiskZoneWhileUsingPhone || wss.belowCriticalThreshold`)이 참인 동안 **위치 이벤트가 올 때마다** `presentHighRiskAlert`를 호출해, 한 구역 안에 머무는 내내 알림이 반복 발송되어 알림 폭주와 렉을 유발했다(사용자 지적). 이제 순수 게이트 `src/session/zoneAlertGate.ts#decideZoneEntryAlert(prevZoneId, currentZoneId, inZone, conditionMet) -> { fire, nextZoneId }`가 판정한다. 밀집 클러스터 알림(`decideDenseClusterAlert`)과 동일한 패턴을 대표 구역 id 로 키잉한 것이며, `backgroundTask.ts`의 모듈 스코프 `lastAlertedZoneId`(`resetSessionTaskState`에서 `''`로 리셋)로 상태를 든다. 규칙: 조건 충족 구역에 **처음 진입할 때 한 번만 발송**, 같은 구역에 머무는 동안 **재발송 없음**, 구역을 벗어나면(zoneId `''`) 리셋, 다시 들어오거나 다른 구역에 들어가면 **재발송**. 구역 안이지만 조건 미충족이면 알림 마커를 진전시키지 않아, 같은 구역에서 나중에 조건이 참이 되면 그때 한 번 발송된다. `presentCriticalScoreAlert`의 쿨다운 분기와 모든 알림 문구는 **불변**이다. 이 변경으로 구역 내 알림 폭주·렉이 사라진다. 뮤테이션 민감 검증은 `scripts/verify-zone-alert-gate.ts`(신규).
+    - **(B) 점수 업로드 무증상 실패 규명/수정**: '보행 시간은 잡혔는데 `select count(*), max(created_at) from wss_scores;`가 계속 0'이라는 보고를 조사했다. 코드 대 스키마 교차 점검 결과 페이로드/스키마는 표면적으로 **일치**한다: 앱 `AgeBandValue`는 5개 밴드이고 `getAgeBand`는 미상일 때 null 을 반환하므로 `'unknown'` 같은 문자열은 서버로 나가지 않으며(스키마 `age_band` check 는 null 또는 5밴드 허용), `onConflict 'device_id,date_iso'`는 유니크 인덱스 `wss_scores_device_date_uniq`와 일치하고, `display_score`는 양쪽 모두 0~100, RLS 에는 anon insert 와 update 정책이 모두 있어 upsert(insert+update)가 가능하다. 진짜 문제는 **실패가 관측 불가능**했다는 것이다: `uploadScore`가 실패를 `false`로만 뭉뚱그려 반환하고 `useWalkSession.stop()`이 업로드를 `catch{}`로 완전히 삼켜, 어떤 사유로도 count 가 0 인 채 아무 에러가 보이지 않았다. 수정: `src/data/supabase.ts`에 `submitFeedbackDetailed` 패턴을 그대로 따르는 구조화 결과 `UploadResult`와 순수 `validateScoreUpload`, 그리고 `uploadScoreDetailed`(사유 `not_configured`/`timeout`/`server`(Supabase message/code/hint)/`exception`/`invalid`, `describeSupabaseError` 재사용, 절대 throw 안 함)를 추가했다. `uploadScore`는 이 상세 함수에 위임해 기존 boolean 계약을 유지하고 **upsert 행 모양과 onConflict 는 바이트 단위로 동일**(페이로드 스키마 불변)하다. `useWalkSession.stop()`은 여전히 fire-and-forget(`void (async () => { ... })()`, stop 을 막지 않음)이되, 실패 시 `__DEV__`에서만 `console.warn('[wss] score upload failed', reason, detail)`로 사유를 드러내고 프로덕션은 조용한 fire-and-forget 을 유지한다. 뮤테이션 민감 검증은 `scripts/verify-score-upload.ts`(신규: 5밴드+null/undefined 통과, `'unknown'`/`'60s'`/`''` 실패, displayScore NaN/-1/101/Infinity 실패, 빈/형식오류 dateISO·deviceId 실패, deviceId 원본값이 detail 에 누출되지 않음).
+    - **스키마 변경 없음(중요)**: 위 감사에서 `wss_scores`의 컬럼·check 제약·유니크 인덱스·RLS(anon insert+update)가 모두 정합하고 이미 idempotent 하게 작성되어 있어 **`supabase/schema.sql`은 이번에 변경하지 않았다.** 따라서 이번 수정은 순수하게 앱 측 관측성(FEAT-003) 개선이며, count 0 의 진짜 서버 측 원인(있다면)은 이제 실기기에서 `__DEV__` 경고 한 줄과 개발자가 실행하는 아래 진단 쿼리로 드러난다. schema.sql 을 건드리지 않았으므로 SQL Editor 재실행은 이 변경 때문에 필요하지는 않다(연령대 컬럼/RPC 등 이전 변경 반영이 아직이라면 그건 별개로 8절대로 재실행).
+
+### 온디바이스 · Supabase 검증 항목(샌드박스 실행 불가 - 실기기 필수)
+- **(Supabase SQL) 업로드가 실제로 들어오는지 확인**: 최신 코드로 **새 preview/development 빌드**를 설치한 뒤 **실제로 걸어서**(확정 보행 시간 > 0) 세션을 종료하고, Supabase SQL Editor 에서 `select count(*), max(created_at) from wss_scores;`를 실행한다. count 가 늘고 `max(created_at)`이 방금 시각이면 업로드 성공이다.
+- **(Supabase SQL) 여전히 0 이면 `__DEV__` 경고를 읽는다**: development 빌드(또는 Metro 콘솔)에서 보행 종료 직후 `[wss] score upload failed <reason> <detail>` 로그 한 줄을 확인한다. 사유별 조치:
+  - `not_configured`: 빌드에 Supabase URL/키가 주입되지 않음. `app.json`의 `extra`(EXPO_PUBLIC_SUPABASE_URL/KEY)를 확인한다(피드백이 성공한다면 같은 키로 점수도 되어야 정상).
+  - `timeout`: 8초 내 서버 무응답(네트워크/일시 장애). 재시도한다.
+  - `server`: Supabase 가 에러를 반환. detail 의 `message`/`code`/`hint`가 정확한 원인을 가리킨다(예: RLS 정책 위반, check 제약 위반, 컬럼 부재). 그 원인에 맞게 조치한다.
+  - `exception`: 예외(detail=String(e)). 스택/문구로 원인을 좁힌다.
+  - `invalid`: 클라이언트 유효성 위반(detail 이 어떤 필드인지 명시). 이 경우 애초에 서버로 나가지 않았다는 뜻이다.
+- **(Supabase SQL, 선택) 스키마 정합 확인 진단 쿼리**: 두 anon RLS 정책과 유니크 인덱스가 존재하는지 눈으로 확인한다.
+  - `select polname from pg_policies where tablename = 'wss_scores';` -> "anon can insert own score" 와 "anon can update own score" 두 개가 보여야 한다(upsert = insert + update).
+  - `select indexname from pg_indexes where tablename = 'wss_scores';` -> `wss_scores_device_date_uniq`(device_id, date_iso)가 보여야 onConflict 가 성립한다.
+- **(온디바이스) 위험구역 진입 알림 1회화 확인**: 위험구역(빨간 원)에 걸어 들어가 알림이 **진입 시 한 번만** 오는지, 그 구역에 머무는 동안 **재발송되지 않는지**, 벗어났다가 다시 들어오거나 다른 구역에 들어가면 **다시 오는지** 확인한다. 구역 안에서 알림이 폭주하거나 렉이 생기지 않아야 한다.
 
 ---
 
@@ -342,13 +360,13 @@ modules/audio-environment/   커스텀 네이티브 오디오 모듈(Swift)
 supabase/schema.sql          DB 스키마(테이블·RLS·RPC)
 docs/feedback.html           피드백 웹 대시보드(로컬 HTML)
 docs/privacy-policy.md/.html 개인정보 처리방침
-scripts/verify-*.ts          순수 로직 검증(25종, 전부 통과 필수)
+scripts/verify-*.ts          순수 로직 검증(28종, 전부 통과 필수)
 assets/accident-zones.json   전국 사고다발지 12,780건(원본, 수정 금지)
 ```
 
-## 10. 검증 스크립트 목록(25종)
-verify-agegroup-stats, verify-api-key, verify-audio-ear-mapping, verify-dedup, verify-feedback, verify-geofence-selection, verify-grade, verify-grid, verify-interaction-tracker, verify-location-walking, verify-motion-classifier, verify-overlap-geometry, verify-overlap-render, verify-posture-math, verify-posture-usage, verify-relative-time, verify-segment-key, verify-session-reducer, verify-supabase-stats, verify-usage-classification, verify-usage-wss, verify-use-ratio, verify-weekly, verify-wss-example, verify-zone-cluster.
-> 참고: 이번 release-prep 변경에서 새 스크립트 `verify-relative-time`(상대 시간 라벨 '방금/N분 전/N시간 전/N일 전' 경계와 레거시 폴백을 mutation-sensitive 로 검증)을 추가해 개수가 24종→25종이 됐다. 서버 통계 7일 이동창 변경은 `supabase/schema.sql`의 SQL 필터 변경이라 별도 verify 스크립트가 없다(개발자가 SQL Editor 재실행으로 반영). 앞선 변경에서 갱신된 스크립트: verify-usage-wss(usageRatio 누진 penalty 제거 반영), verify-wss-example(penalty 제거로 displayScore===rawScore 회귀 확인), verify-weekly(JSON 직렬화 왕복 실배선 케이스로 가중평균이 단순평균·마지막값과 구분되는지 mutation-sensitive 검증 + computeTodayScore).
+## 10. 검증 스크립트 목록(28종)
+verify-agegroup-stats, verify-api-key, verify-audio-ear-mapping, verify-dedup, verify-feedback, verify-geofence-selection, verify-grade, verify-grid, verify-interaction-tracker, verify-location-walking, verify-motion-classifier, verify-overlap-geometry, verify-overlap-render, verify-posture-math, verify-posture-usage, verify-relative-time, verify-score-upload, verify-segment-key, verify-session-reducer, verify-supabase-stats, verify-usage-classification, verify-usage-wss, verify-use-ratio, verify-walk-gate, verify-weekly, verify-wss-example, verify-zone-alert-gate, verify-zone-cluster.
+> 참고: 이번 release-prep 변경에서 새 스크립트 `verify-relative-time`(상대 시간 라벨 '방금/N분 전/N시간 전/N일 전' 경계와 레거시 폴백을 mutation-sensitive 로 검증)을 추가해 개수가 24종→25종이 됐다. 서버 통계 7일 이동창 변경은 `supabase/schema.sql`의 SQL 필터 변경이라 별도 verify 스크립트가 없다(개발자가 SQL Editor 재실행으로 반영). 앞선 변경에서 갱신된 스크립트: verify-usage-wss(usageRatio 누진 penalty 제거 반영), verify-wss-example(penalty 제거로 displayScore===rawScore 회귀 확인), verify-weekly(JSON 직렬화 왕복 실배선 케이스로 가중평균이 단순평균·마지막값과 구분되는지 mutation-sensitive 검증 + computeTodayScore). 이후 추가: `verify-walk-gate`(0초 보행 게이팅 hasWalked), `verify-zone-alert-gate`(위험구역 진입 알림 1회화 decideZoneEntryAlert), `verify-score-upload`(점수 업로드 페이로드 검증 validateScoreUpload)로 25종→28종이 됐다.
 실행: `env -u NODE_OPTIONS node --experimental-strip-types scripts/verify-<name>.ts`
 
 ---
