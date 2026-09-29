@@ -138,10 +138,68 @@ function getClient(): unknown | null {
   return cachedClient;
 }
 
-// 익명 점수를 upsert 한다(같은 device_id+date_iso 는 덮어쓰기).
-// 성공하면 true, 미설정/오류/실패면 false 를 반환하되 예외를 던지지 않는다.
-// 호출부(세션 종료)는 이 결과에 의존하지 않아야 한다(로컬 저장이 항상 우선).
-export async function uploadScore(payload: WssScoreUpload): Promise<boolean> {
+// 점수 업로드의 구조화된 결과. 피드백(SubmitResult)과 같은 모양을 따르며, 실패가
+// "업로드 실패"로만 뭉뚱그려지지 않고 사유(reason)/진단(detail)로 구분되게 한다.
+//   - invalid: 클라이언트 유효성 위반(어떤 필드가 왜 잘못됐는지 detail 에 명시).
+//   - not_configured: Supabase URL/키 미설정(서버가 준비되지 않음).
+//   - timeout: 서버 응답이 NETWORK_TIMEOUT_MS 안에 오지 않음.
+//   - server: upsert 가 error 를 반환(Supabase 에러 message/code/hint 를 detail 에).
+//   - exception: 예상치 못한 예외(String(e)).
+// detail 에는 위치/경로/device_id 원본 등 민감정보를 절대 담지 않는다(유효성 필드명/
+// 서버 에러 메시지만 노출). 특히 deviceId 값 자체는 어떤 경우에도 detail 에 담지 않는다.
+export type UploadResult =
+  | { ok: true }
+  | {
+      ok: false;
+      reason: 'not_configured' | 'timeout' | 'server' | 'exception' | 'invalid';
+      detail?: string;
+    };
+
+// 서버로 나가기 전 페이로드를 스키마와 동일한 규칙으로 검증하는 순수 함수.
+// 페이로드 모양은 절대 바꾸지 않으며(불변), 위반이 있으면 어느 필드가 왜 잘못됐는지만
+// detail 로 알려준다(민감값은 담지 않는다 - 특히 deviceId 원본은 노출 금지).
+// 유효하면 null 을 반환한다(= "유효성 위반 없음"). 클라이언트가 없어 실제 업로드가
+// 불가능한지 여부는 여기서 판단하지 않는다(그건 uploadScoreDetailed 의 몫).
+//   - displayScore: 유한수이며 0..100 (스키마 display_score check 와 일치)
+//   - dateISO: yyyy-mm-dd 형식의 비어있지 않은 문자열
+//   - deviceId: 비어있지 않은 문자열(값은 detail 에 절대 담지 않음)
+//   - ageBand: 5개 밴드 중 하나이거나 null/undefined (스키마 age_band check 와 일치)
+export function validateScoreUpload(payload: WssScoreUpload): UploadResult | null {
+  const { displayScore, dateISO, deviceId, ageBand } = payload;
+  if (typeof displayScore !== 'number' || !Number.isFinite(displayScore)) {
+    return { ok: false, reason: 'invalid', detail: 'displayScore 가 유한한 숫자가 아닙니다.' };
+  }
+  if (displayScore < 0 || displayScore > 100) {
+    return { ok: false, reason: 'invalid', detail: 'displayScore 는 0~100 범위여야 합니다.' };
+  }
+  if (typeof dateISO !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(dateISO)) {
+    return { ok: false, reason: 'invalid', detail: 'dateISO 는 yyyy-mm-dd 형식이어야 합니다.' };
+  }
+  if (typeof deviceId !== 'string' || deviceId.trim().length === 0) {
+    return { ok: false, reason: 'invalid', detail: 'deviceId 가 비어 있습니다.' };
+  }
+  const validAgeBand =
+    ageBand === null ||
+    ageBand === undefined ||
+    ageBand === '10s' ||
+    ageBand === '20s' ||
+    ageBand === '30s' ||
+    ageBand === '40s' ||
+    ageBand === '50plus';
+  if (!validAgeBand) {
+    return { ok: false, reason: 'invalid', detail: 'ageBand 가 허용된 밴드가 아닙니다.' };
+  }
+  return null;
+}
+
+// 익명 점수를 upsert 하고 구조화된 결과(UploadResult)를 반환한다. submitFeedbackDetailed
+// 와 동일한 패턴(순수 유효성 게이트 -> 미설정 -> 타임아웃/서버오류/예외 분기)을 따른다.
+// 예외를 절대 던지지 않으며, 실패 사유를 __DEV__ 로그로 관찰할 수 있게 한다.
+// upsert 행 모양과 onConflict 는 기존과 바이트 단위로 동일하다(페이로드 스키마 불변).
+export async function uploadScoreDetailed(payload: WssScoreUpload): Promise<UploadResult> {
+  const invalid = validateScoreUpload(payload);
+  if (invalid) return invalid;
+
   const client = getClient() as
     | {
         from: (t: string) => {
@@ -152,7 +210,7 @@ export async function uploadScore(payload: WssScoreUpload): Promise<boolean> {
         };
       }
     | null;
-  if (!client) return false;
+  if (!client) return { ok: false, reason: 'not_configured' };
   try {
     const result = await withTimeout(
       client.from('wss_scores').upsert(
@@ -167,12 +225,26 @@ export async function uploadScore(payload: WssScoreUpload): Promise<boolean> {
       ),
       NETWORK_TIMEOUT_MS
     );
-    // 타임아웃이면 실패로 처리(false). 예외 없이 조용히 실패한다.
-    if (result === TIMEOUT) return false;
-    return !result.error;
-  } catch {
-    return false;
+    // 타임아웃이면 사유를 담아 반환(false 로 뭉뚱그리지 않는다).
+    if (result === TIMEOUT) {
+      return { ok: false, reason: 'timeout', detail: `서버 응답이 없어 시간이 초과됐습니다(${NETWORK_TIMEOUT_MS}ms).` };
+    }
+    if (result.error) {
+      return { ok: false, reason: 'server', detail: describeSupabaseError(result.error) };
+    }
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, reason: 'exception', detail: String(e) };
   }
+}
+
+// 익명 점수를 upsert 한다(같은 device_id+date_iso 는 덮어쓰기).
+// 성공하면 true, 미설정/오류/실패면 false 를 반환하되 예외를 던지지 않는다.
+// 기존 boolean 반환 계약을 유지하기 위해 uploadScoreDetailed 에 위임하고 ok 만 반환한다.
+// 호출부(세션 종료)는 이 결과에 의존하지 않아야 한다(로컬 저장이 항상 우선).
+export async function uploadScore(payload: WssScoreUpload): Promise<boolean> {
+  const result = await uploadScoreDetailed(payload);
+  return result.ok;
 }
 
 // 피드백 전송의 구조화된 결과. 실패 시 사유(reason)와 사람이 읽을 수 있는

@@ -51,7 +51,7 @@ import {
 import { saveResult } from '../storage/history';
 import { getOrCreateDeviceId } from '../storage/deviceId';
 import { getAgeBand } from '../storage/ageBand';
-import { uploadScore } from '../data/supabase';
+import { uploadScoreDetailed } from '../data/supabase';
 
 // 로컬 날짜를 yyyy-mm-dd 로 만든다(시각/타임존은 서버에 보내지 않는다).
 function toDateISO(date: Date): string {
@@ -233,9 +233,18 @@ export function useWalkSession(): UseWalkSession {
           // 온보딩에서 1회 선택한 연령대 밴드를 함께 보낸다(미선택이면 null).
           // 그룹 비교 통계 용도이며, 위치·경로 등은 여전히 전송하지 않는다.
           const ageBand = await getAgeBand();
-          await uploadScore({ deviceId, displayScore, dateISO, ageBand });
-        } catch {
-          // 업로드 실패는 조용히 무시한다(부가기능).
+          // 구조화된 결과를 받아 실패 사유를 관찰 가능하게 한다. 프로덕션은 여전히 조용한
+          // fire-and-forget 이지만, 개발 중(__DEV__)에는 사유/진단을 콘솔로 드러내
+          // "wss_scores count 0" 같은 무증상 실패의 원인을 바로 알 수 있게 한다.
+          const uploadResult = await uploadScoreDetailed({ deviceId, displayScore, dateISO, ageBand });
+          if (!uploadResult.ok && __DEV__) {
+            console.warn('[wss] score upload failed', uploadResult.reason, uploadResult.detail ?? '');
+          }
+        } catch (e) {
+          // 업로드 실패는 조용히 무시한다(부가기능). 개발 중에만 사유를 드러낸다.
+          if (__DEV__) {
+            console.warn('[wss] score upload threw', String(e));
+          }
         }
       })();
     }
