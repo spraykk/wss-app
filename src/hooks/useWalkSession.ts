@@ -49,6 +49,7 @@ import {
   dismissTrackingNotification,
 } from '../notifications/alerts';
 import { saveResult } from '../storage/history';
+import { computeTodayScore } from '../wss/weekly';
 import { getOrCreateDeviceId } from '../storage/deviceId';
 import { getAgeBand } from '../storage/ageBand';
 import { uploadScoreDetailed } from '../data/supabase';
@@ -216,17 +217,34 @@ export function useWalkSession(): UseWalkSession {
       // 쓰인다. 별도 대입이 필요 없으며(스프레드로 충분), 업로드 payload 에는 추가하지 않는다.
       const result = { ...computed, dateISO, recordedAt };
       finishedResult = result;
-      await saveResult(result);
+      // saveResult 는 이 보행을 이력 맨 앞에 추가해 저장하고, 갱신된 전체 이력을 반환한다.
+      // 이 전체 이력으로 "오늘의 대표 점수(보행 시간 가중평균)"를 계산해 서버에 올린다.
+      const updatedHistory = await saveResult(result);
 
       // 익명 통계 서버로 최소 데이터만 업로드한다: displayScore(0~100), 날짜, 익명 deviceId.
       // 위치·경로·rawScore 등은 전송하지 않는다.
+      //
+      // [하루 대표 = 보행 시간 가중평균] 예전엔 "방금 끝난 그 한 번의 보행 점수"를 그대로
+      // 올렸다. wss_scores 는 (device_id, date_iso) 로 upsert(덮어쓰기)하므로, 하루에 여러 번
+      // 걸으면 마지막 보행 점수만 서버에 남아 그날을 대표하지 못했다(예: 아침 90점·저녁 40점이면
+      // 40점만 남음). 앱의 리포트는 이미 하루 대표를 "보행 시간 가중평균"으로 보여주는데
+      // (weekly.ts/computeTodayScore) 서버 업로드만 그 설계와 어긋나 있었다. 이제 방금 보행을
+      // 이력에 저장한 뒤, computeTodayScore(전체 이력, 오늘)로 오늘의 가중평균을 계산해 그 값을
+      // 올린다. 그러면 서버의 하루 값이 로컬 리포트의 '오늘의 총점'과 정확히 일치한다.
+      //   - 하루 1회만 걸으면 가중평균 = 그 보행 점수라 값이 같다(정상).
+      //   - 계산이 어떤 이유로 null 이면(이론상 없음) 이번 보행 점수로 안전 폴백한다.
+      // upsert 덮어쓰기는 그대로 유지한다(덮어쓰는 값이 이제 '그날 가중평균'이라 올바르다).
       //
       // 중요(렉 방지): 업로드는 부가기능이므로 종료 흐름에서 "기다리지 않는다"(fire-and-forget).
       // 예전엔 여기서 `await uploadScore(...)` 로 네트워크 왕복을 동기 대기했는데, Supabase
       // 업로드가 느리거나 실패하면 그 시간만큼 stop 핸들러 → UI 가 멈췄다("보행 종료" 렉).
       // 이제 deviceId 취득 + 업로드를 백그라운드로 던지고(void) stop 은 이를 기다리지 않는다.
       // 실패/타임아웃은 조용히 무시한다(로컬 저장이 항상 우선, 종료를 절대 깨지 않는다).
-      const displayScore = result.displayScore;
+      const todayWeighted = computeTodayScore(updatedHistory, dateISO);
+      const displayScore =
+        todayWeighted !== null && Number.isFinite(todayWeighted)
+          ? todayWeighted
+          : result.displayScore;
       void (async () => {
         try {
           const deviceId = await getOrCreateDeviceId();
